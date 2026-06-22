@@ -2631,12 +2631,7 @@ pub fn run() !void {
                     const key = scaled_event.key.key;
                     if (key == c.SDLK_ESCAPE and input.canHandleEscapePress(anim_state.mode)) {
                         const focused = sessions[anim_state.focused_session];
-                        const writable = focused.spawned and !focused.dead and focused.shell != null;
-                        // TEMP diagnostic for the Esc-in-grid bug: shows the key-up reached the
-                        // app switch (not consumed upstream), the view mode, which session it
-                        // targets, and whether that session is writable. Remove once resolved.
-                        log.info("esc key-up reached app: mode={s} focused_session={d} writable={}", .{ @tagName(anim_state.mode), anim_state.focused_session, writable });
-                        if (writable) {
+                        if (focused.spawned and !focused.dead and focused.shell != null) {
                             const esc_byte: [1]u8 = .{27};
                             _ = focused.shell.?.write(&esc_byte) catch |err| {
                                 log.warn("session {d}: failed to send escape key: {}", .{ anim_state.focused_session, err });
