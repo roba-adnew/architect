@@ -12,6 +12,7 @@ const input_text = @import("input_text.zig");
 const layout = @import("layout.zig");
 const terminal_actions = @import("terminal_actions.zig");
 const ui_host = @import("ui_host.zig");
+const test_probe = @import("test_probe.zig");
 const worktree = @import("worktree.zig");
 const control = @import("control.zig");
 const notify = @import("../session/notify.zig");
@@ -3305,6 +3306,9 @@ pub fn run() !void {
             focused_has_foreground_process,
             &theme,
         );
+
+        // E2E harness observability (no-op unless ARCHITECT_TEST_MODE is set).
+        test_probe.writeState(allocator, &ui_render_host);
 
         const animating = anim_state.mode != .Grid and anim_state.mode != .Full;
         const ui_needs_frame = ui.needsFrame(&ui_render_host);

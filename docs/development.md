@@ -140,6 +140,24 @@ Format code:
 zig fmt src/
 ```
 
+## End-to-end UI tests
+
+`zig build test` covers logic but not real UI behavior (focus, view-mode
+transitions, clicks) — the area that has caused the most regressions. The E2E
+harness in `scripts/e2e/` fills that gap: with `ARCHITECT_TEST_MODE=1` the app
+writes a per-frame JSON state snapshot (`src/app/test_probe.zig`, a no-op in
+production), and a Python harness launches an isolated instance, injects real
+keys/clicks, and asserts on that state.
+
+```bash
+zig build && python3 scripts/e2e/test_ui.py
+```
+
+Each test launches a real window and drives it with OS input, so it briefly takes
+over the screen (macOS GUI session required; not yet headless). See
+`scripts/e2e/README.md` for how to add scenarios and the roadmap to a
+socket-driven headless version.
+
 ## Release Process
 
 macOS release binaries are automatically built for both ARM64 (Apple Silicon) and x86_64 (Intel) architectures via GitHub Actions when a version tag is pushed:
