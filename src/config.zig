@@ -355,6 +355,14 @@ pub const Persistence = struct {
     /// Live grid-pane font-scale multiplier (Cmd+Opt +/-), persisted so it
     /// survives relaunch. 0 = unset -> fall back to [font]/[grid] config.
     grid_font_scale: f32 = 0,
+    /// Per-grid-shape font-scale presets, keyed by "<cols>x<rows>", so each grid
+    /// shape remembers its own zoom level across relaunches.
+    grid_font_presets: std.ArrayListUnmanaged(GridFontPreset) = .{},
+
+    pub const GridFontPreset = struct {
+        dims: []const u8,
+        scale: f32,
+    };
 
     const TomlPersistenceV3 = struct {
         window: WindowConfig = .{},
@@ -366,6 +374,7 @@ pub const Persistence = struct {
         focused_session: usize = 0,
         zoomed: bool = false,
         grid_font_scale: f32 = 0,
+        grid_font_presets: ?toml.HashMap(f32) = null,
     };
 
     const TomlPersistenceV2 = struct {
@@ -391,6 +400,8 @@ pub const Persistence = struct {
         self.terminal_entries.deinit(allocator);
         self.clearRecentFolders(allocator);
         self.recent_folders.deinit(allocator);
+        self.clearGridFontPresets(allocator);
+        self.grid_font_presets.deinit(allocator);
     }
 
     pub fn load(allocator: std.mem.Allocator) !Persistence {
@@ -438,6 +449,10 @@ pub const Persistence = struct {
 
             if (result.value.recent_folders) |folders_map| {
                 try persistence.loadRecentFoldersFromMap(allocator, folders_map);
+            }
+
+            if (result.value.grid_font_presets) |presets_map| {
+                try persistence.loadGridFontPresetsFromMap(allocator, presets_map);
             }
 
             return persistence;
@@ -561,6 +576,15 @@ pub const Persistence = struct {
             for (self.recent_folders.items) |folder| {
                 try writeTomlStringToWriter(writer, folder.path);
                 try writer.print(" = {d}\n", .{folder.count});
+            }
+        }
+
+        // Write [grid_font_presets] section: "<cols>x<rows>" -> font scale.
+        if (self.grid_font_presets.items.len > 0) {
+            try writer.writeAll("\n[grid_font_presets]\n");
+            for (self.grid_font_presets.items) |preset| {
+                try writeTomlStringToWriter(writer, preset.dims);
+                try writer.print(" = {d:.3}\n", .{preset.scale});
             }
         }
     }
@@ -717,6 +741,54 @@ pub const Persistence = struct {
     /// Get the list of recent folders (for overlay display)
     pub fn getRecentFolders(self: *const Persistence) []const RecentFolder {
         return self.recent_folders.items;
+    }
+
+    fn gridDimsKey(buf: []u8, cols: usize, rows: usize) ![]const u8 {
+        return std.fmt.bufPrint(buf, "{d}x{d}", .{ cols, rows });
+    }
+
+    /// Load per-grid-shape font-scale presets from the TOML table. Only the key
+    /// (the "<cols>x<rows>" string) is parser-owned, so it is duplicated; the f32
+    /// value is a scalar copied by value.
+    fn loadGridFontPresetsFromMap(self: *Persistence, allocator: std.mem.Allocator, map: toml.HashMap(f32)) !void {
+        var it = map.map.iterator();
+        while (it.next()) |entry| {
+            const dims_copy = try allocator.dupe(u8, entry.key_ptr.*);
+            errdefer allocator.free(dims_copy);
+            try self.grid_font_presets.append(allocator, .{ .dims = dims_copy, .scale = entry.value_ptr.* });
+        }
+    }
+
+    pub fn clearGridFontPresets(self: *Persistence, allocator: std.mem.Allocator) void {
+        for (self.grid_font_presets.items) |preset| {
+            allocator.free(preset.dims);
+        }
+        self.grid_font_presets.clearRetainingCapacity();
+    }
+
+    /// Saved font scale for a grid shape, or null if none stored yet.
+    pub fn getGridFontPreset(self: *const Persistence, cols: usize, rows: usize) ?f32 {
+        var buf: [32]u8 = undefined;
+        const key = gridDimsKey(&buf, cols, rows) catch return null;
+        for (self.grid_font_presets.items) |preset| {
+            if (std.mem.eql(u8, preset.dims, key)) return preset.scale;
+        }
+        return null;
+    }
+
+    /// Upsert the font scale for a grid shape.
+    pub fn setGridFontPreset(self: *Persistence, allocator: std.mem.Allocator, cols: usize, rows: usize, scale: f32) !void {
+        var buf: [32]u8 = undefined;
+        const key = try gridDimsKey(&buf, cols, rows);
+        for (self.grid_font_presets.items) |*preset| {
+            if (std.mem.eql(u8, preset.dims, key)) {
+                preset.scale = scale;
+                return;
+            }
+        }
+        const dims_copy = try allocator.dupe(u8, key);
+        errdefer allocator.free(dims_copy);
+        try self.grid_font_presets.append(allocator, .{ .dims = dims_copy, .scale = scale });
     }
 
     fn appendLegacyTerminalEntries(self: *Persistence, allocator: std.mem.Allocator, stored: toml.HashMap([]const u8)) !void {
@@ -1421,6 +1493,44 @@ test "writeFileAtomicallyAbsolute replaces file with valid TOML" {
     try std.testing.expectEqual(@as(i32, 1440), result.value.window.width);
     try std.testing.expectEqual(@as(i32, 100), result.value.window.x);
     try std.testing.expectEqual(@as(i32, 200), result.value.window.y);
+}
+
+test "Persistence grid font presets save/load round-trip" {
+    const allocator = std.testing.allocator;
+    const tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const tmp_path = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(tmp_path);
+    const test_file = try fs.path.join(allocator, &[_][]const u8{ tmp_path, "presets.toml" });
+    defer allocator.free(test_file);
+
+    var original = Persistence.init(allocator);
+    defer original.deinit(allocator);
+    try original.setGridFontPreset(allocator, 3, 2, 1.2);
+    try original.setGridFontPreset(allocator, 2, 2, 0.8);
+    try original.setGridFontPreset(allocator, 3, 2, 1.5); // upsert, not a duplicate
+    try std.testing.expectEqual(@as(usize, 2), original.grid_font_presets.items.len);
+    try std.testing.expectEqual(@as(?f32, 1.5), original.getGridFontPreset(3, 2));
+    try std.testing.expectEqual(@as(?f32, null), original.getGridFontPreset(4, 4));
+
+    try original.saveToPath(allocator, test_file);
+
+    const file = try fs.openFileAbsolute(test_file, .{});
+    defer file.close();
+    const contents = try file.readToEndAlloc(allocator, 1024 * 1024);
+    defer allocator.free(contents);
+
+    var parser = toml.Parser(Persistence.TomlPersistenceV3).init(allocator);
+    defer parser.deinit();
+    var result = try parser.parseString(contents);
+    defer result.deinit();
+
+    var loaded = Persistence.init(allocator);
+    defer loaded.deinit(allocator);
+    if (result.value.grid_font_presets) |m| try loaded.loadGridFontPresetsFromMap(allocator, m);
+
+    try std.testing.expectApproxEqAbs(@as(f32, 1.5), loaded.getGridFontPreset(3, 2).?, 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.8), loaded.getGridFontPreset(2, 2).?, 0.001);
 }
 
 test "Persistence.removeRecentFolder removes the named entry" {

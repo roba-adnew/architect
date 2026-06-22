@@ -1641,6 +1641,10 @@ pub fn run() !void {
     var grid_font_size: c_int = layout.scaledFontSize(font_size, ui_scale);
     var grid_font_generation: u64 = shared_font_cache.generation;
     var grid_render_scale: f32 = 1.0;
+    // Per-grid-shape font scale: when the grid shape changes, load its saved
+    // preset (Cmd+Opt zoom is remembered per "<cols>x<rows>"). 0 = not yet resolved.
+    var resolved_grid_cols: usize = 0;
+    var resolved_grid_rows: usize = 0;
 
     var ui_font = try initSharedFont(allocator, renderer, &ui_font_cache, layout.scaledFontSize(ui_font_size, ui_scale));
     defer ui_font.deinit();
@@ -2375,6 +2379,9 @@ pub fn run() !void {
                                 config.grid.font_scale = target_scale;
                                 applyTerminalLayout(sessions, allocator, &font, render_width, render_height, ui_scale, &anim_state, grid.cols, grid.rows, config.grid.font_scale, &full_cols, &full_rows);
                                 persistence.grid_font_scale = config.grid.font_scale;
+                                persistence.setGridFontPreset(allocator, grid.cols, grid.rows, config.grid.font_scale) catch |err| {
+                                    log.warn("failed to save grid font preset: {}", .{err});
+                                };
                                 persistence_dirty = true;
                                 savePersistenceIfDirty(&persistence, allocator, &persistence_dirty);
                             }
@@ -3273,6 +3280,16 @@ pub fn run() !void {
                 }
                 std.debug.print("Grid resize complete: {d}x{d}\n", .{ grid.cols, grid.rows });
             }
+        }
+
+        // When the grid shape changes, resolve its saved per-shape font scale
+        // (falling back to the global) before the per-frame layout so the PTY
+        // dims and the grid font agree.
+        if (grid.cols != resolved_grid_cols or grid.rows != resolved_grid_rows) {
+            resolved_grid_cols = grid.cols;
+            resolved_grid_rows = grid.rows;
+            const preset = persistence.getGridFontPreset(grid.cols, grid.rows) orelse persistence.grid_font_scale;
+            config.grid.font_scale = std.math.clamp(preset, config_mod.min_grid_font_scale, config_mod.max_grid_font_scale);
         }
 
         const terminal_layout_changed = applyTerminalLayoutIfSizeChanged(

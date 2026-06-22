@@ -308,6 +308,10 @@ y = 50
 "/Users/me/projects/app" = 15
 "/Users/me/projects/lib" = 8
 "/Users/me" = 3
+
+[grid_font_presets]
+"3x2" = 1.200
+"2x2" = 0.800
 ```
 
 ### Fields
@@ -320,6 +324,8 @@ y = 50
 | `terminal_session_ids` | Session UUID for each terminal slot, or an empty string (`""`) when absent. Written alongside `terminal_agent_types` when an agent session ID was captured at quit. On next launch, Architect writes the corresponding resume command (e.g., `claude --resume <uuid>`) to the terminal as soon as the shell is ready. |
 | `[window]` | Last window position and dimensions |
 | `[recent_folders]` | Directory visit counts (up to 10 entries, sorted by frequency for `Cmd+O` overlay) |
+| `grid_font_scale` | Last grid-view font zoom multiplier (`Cmd+Opt +/-`); global fallback when a grid shape has no saved preset |
+| `[grid_font_presets]` | Per-grid-shape font zoom, keyed by `"<cols>x<rows>"` — each grid shape remembers its own `Cmd+Opt` zoom across relaunches (grid text is rendered crisply at that scale's native size) |
 
 On launch, Architect restores terminals to their saved working directories. The grid automatically resizes to fit the number of restored terminals. If a terminal had an AI agent running when Architect was last closed, the agent is automatically resumed.
 
