@@ -30,8 +30,16 @@ pub const Persist = struct {
 
 /// tmux config that turns tmux into an invisible persistence layer: no status
 /// bar, no prefix, every key unbound (so Ctrl-B etc. pass straight through to
-/// the agent), instant Escape, generous scrollback, truecolor passthrough, and
-/// sessions that outlive a detached client.
+/// the agent), instant Escape, generous scrollback, truecolor passthrough,
+/// OSC 8 hyperlink passthrough (so Cmd+Click doc links survive the tmux round
+/// trip), and sessions that outlive a detached client.
+///
+/// `hyperlinks` in terminal-features tells tmux the OUTER terminal (Architect)
+/// understands OSC 8, so tmux re-emits hyperlinks it parsed from the pane
+/// instead of stripping them; `allow-passthrough on` lets agents forward raw
+/// escape sequences (OSC 52 clipboard, etc.) through tmux unmodified. Verified:
+/// without `hyperlinks`, a pane's OSC 8 link is dropped before reaching
+/// Architect; with it, the link is re-emitted intact.
 const conf_contents =
     \\set -g status off
     \\set -g prefix None
@@ -43,7 +51,8 @@ const conf_contents =
     \\set -g mouse off
     \\set -g focus-events off
     \\set -g default-terminal "screen-256color"
-    \\set -as terminal-features ",*:RGB"
+    \\set -as terminal-features ",*:RGB:hyperlinks"
+    \\set -g allow-passthrough on
     \\
 ;
 
@@ -101,6 +110,31 @@ fn writeConf(path: [:0]const u8) !void {
     try file.writeAll(conf_contents);
 }
 
+/// Re-apply the passthrough options to a server that is ALREADY running. tmux
+/// reads `-f` only when it first starts the server, so a server left over from a
+/// previous Architect launch keeps its old options (e.g. missing the hyperlinks
+/// feature) even after we rewrite the file. The next client attach negotiates
+/// these, so OSC 8 links survive without restarting the server (which would kill
+/// the agents). Best effort — on the first launch no server exists yet (no-op).
+///
+/// We set the two relevant options directly rather than `source-file`-ing the
+/// whole conf, because the conf's `unbind-key -a` errors ("table prefix doesn't
+/// exist") on a server whose prefix table was already emptied at start, aborting
+/// the rest of the file before it reaches these lines. Keep in sync with
+/// `conf_contents`.
+fn refreshRunningServer(allocator: std.mem.Allocator, tmux_path: [:0]const u8, socket_path: [:0]const u8) void {
+    var child = std.process.Child.init(&[_][]const u8{
+        tmux_path,       "-S",                socket_path,
+        "set",           "-ag",               "terminal-features",
+        ",*:hyperlinks", ";",                 "set",
+        "-g",            "allow-passthrough", "on",
+    }, allocator);
+    child.stdin_behavior = .Ignore;
+    child.stdout_behavior = .Ignore;
+    child.stderr_behavior = .Ignore;
+    _ = child.spawnAndWait() catch return;
+}
+
 /// Build persist options for a session slot, or null if persistence is disabled
 /// or unavailable (tmux not found). On any partial failure, frees what it
 /// allocated and returns null so the caller falls back to a direct shell spawn.
@@ -125,6 +159,11 @@ pub fn buildPersist(allocator: std.mem.Allocator, slot_index: usize) ?Persist {
         log.warn("failed to write tmux config {s}: {}; using direct shell", .{ conf_path, err });
         return null;
     };
+
+    // Push current options into a server that survived a previous launch, so the
+    // upcoming attach negotiates with the new conf (e.g. hyperlinks) instead of
+    // the stale one. No-op when no server is running yet.
+    refreshRunningServer(allocator, tmux_path, socket_path);
 
     return .{
         .tmux_path = tmux_path,
