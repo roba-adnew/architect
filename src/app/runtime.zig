@@ -16,6 +16,7 @@ const test_probe = @import("test_probe.zig");
 const worktree = @import("worktree.zig");
 const control = @import("control.zig");
 const notify = @import("../session/notify.zig");
+const notify_sound = @import("../notify_sound.zig");
 const session_state = @import("../session/state.zig");
 const view_state = @import("../ui/session_view_state.zig");
 const platform = @import("../platform/sdl.zig");
@@ -2771,6 +2772,11 @@ pub fn run() !void {
                         .awaiting_approval, .done => true,
                         else => false,
                     };
+                    // Chime when an agent needs you or finishes, but only while
+                    // Architect is backgrounded (foreground already shows the border).
+                    if (wants_attention and config.notifications.sound and !window_focused) {
+                        notify_sound.play(allocator, s.state);
+                    }
                     const is_focused_full = anim_state.mode == .Full and anim_state.focused_session == session_idx;
                     session_interaction_component.setAttention(session_idx, if (is_focused_full) false else wants_attention, now);
                     std.debug.print("Session {d} (slot {d}) status -> {s}\n", .{ s.session, session_idx, @tagName(s.state) });

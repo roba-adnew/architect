@@ -147,6 +147,19 @@ show_hotkey_feedback = true  # Show hotkey hints overlay (default: true)
 enable_animations = true     # Enable expand/collapse animations (default: true)
 ```
 
+### Notification Configuration
+
+```toml
+[notifications]
+sound = true  # Play a macOS system chime when an agent needs approval or
+              # finishes, while Architect is in the background (default: true)
+```
+
+The chime only plays when Architect is **not** the frontmost app — when it's
+focused, the pulsing pane border is the signal instead. Distinct sounds are used
+for "needs approval" (Ping) and "done" (Glass). macOS only; set `sound = false`
+to silence.
+
 ### Rendering Configuration
 
 ```toml

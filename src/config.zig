@@ -82,6 +82,12 @@ pub const UiConfig = struct {
     inactive_overlay_alpha: i32 = 130,
 };
 
+pub const NotificationsConfig = struct {
+    /// Play a macOS system sound when an agent needs approval or finishes while
+    /// Architect is in the background. macOS only. Set false to silence.
+    sound: bool = true,
+};
+
 pub const PasteConfig = struct {
     /// When true, pressing Cmd+V while the system clipboard holds an image
     /// writes the image to a temp PNG and pastes that file path into the focused
@@ -810,6 +816,7 @@ pub const Config = struct {
     theme: ThemeConfig = .{},
     ui: UiConfig = .{},
     paste: PasteConfig = .{},
+    notifications: NotificationsConfig = .{},
     rendering: Rendering = .{},
     metrics: MetricsConfig = .{},
     logging: LoggingConfig = .{},
@@ -877,6 +884,11 @@ pub const Config = struct {
             \\# show_hotkey_feedback = true
             \\# enable_animations = true
             \\# inactive_overlay_alpha = 130  # 0-255 accent dim over panes when app is not frontmost (0 = off)
+            \\
+            \\# Notification options
+            \\# [notifications]
+            \\# sound = true  # macOS chime when an agent needs approval or finishes
+            \\#               # while Architect is in the background
             \\
             \\# Paste options
             \\# [paste]
