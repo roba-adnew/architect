@@ -102,7 +102,10 @@ pub const FontPaths = struct {
     }
 };
 
-const default_font_family = "SFNSMono";
+// Menlo (a .ttc with Regular/Bold/Italic faces) over SF Mono: it has more body
+// and is tuned for terminal legibility — closer to the VS Code terminal look,
+// especially at low DPI where SF Mono renders thin. Override via [font] family.
+const default_font_family = "Menlo";
 
 fn findSystemFont(allocator: std.mem.Allocator, font_family: []const u8, style: []const u8) ![:0]const u8 {
     const search_dirs = [_][]const u8{

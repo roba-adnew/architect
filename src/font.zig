@@ -6,6 +6,15 @@ const metrics_mod = @import("metrics.zig");
 
 const log = std.log.scoped(.font);
 
+// ── FONT WEIGHT KNOB ─────────────────────────────────────────────────────────
+// How much to fatten text. Each glyph is redrawn dilated +1px in every direction
+// at this alpha, thickening strokes toward the macOS/VS Code weight (FreeType
+// renders thin). Does NOT change column width.
+//   0   = off (thinnest / original)
+//   255 = maximum (very bold) ← current EXTREME starting point; dial DOWN to taste
+// Edit this number, then rebuild + relaunch with `archy` to see the change.
+const text_weight_alpha: u8 = 60;
+
 pub const Fallback = enum {
     primary,
     symbol_embedded,
@@ -196,14 +205,14 @@ pub const Font = struct {
         };
         errdefer c.TTF_CloseFont(font);
 
-        _ = c.TTF_SetFontDirection(font, c.TTF_DIRECTION_LTR);
+        configureFace(font);
 
         const bold_font = if (bold_font_path) |path| blk: {
             const f = c.TTF_OpenFont(path, @floatFromInt(size));
             if (f == null) {
                 log.warn("Failed to open bold font: {s}", .{c.SDL_GetError()});
             } else {
-                _ = c.TTF_SetFontDirection(f.?, c.TTF_DIRECTION_LTR);
+                configureFace(f.?);
             }
             break :blk f;
         } else null;
@@ -214,7 +223,7 @@ pub const Font = struct {
             if (f == null) {
                 log.warn("Failed to open italic font: {s}", .{c.SDL_GetError()});
             } else {
-                _ = c.TTF_SetFontDirection(f.?, c.TTF_DIRECTION_LTR);
+                configureFace(f.?);
             }
             break :blk f;
         } else null;
@@ -225,7 +234,7 @@ pub const Font = struct {
             if (f == null) {
                 log.warn("Failed to open bold-italic font: {s}", .{c.SDL_GetError()});
             } else {
-                _ = c.TTF_SetFontDirection(f.?, c.TTF_DIRECTION_LTR);
+                configureFace(f.?);
             }
             break :blk f;
         } else null;
@@ -236,7 +245,7 @@ pub const Font = struct {
             if (f == null) {
                 log.warn("Failed to open symbol fallback font: {s}", .{c.SDL_GetError()});
             } else {
-                _ = c.TTF_SetFontDirection(f.?, c.TTF_DIRECTION_LTR);
+                configureFace(f.?);
             }
             break :blk f;
         } else null;
@@ -247,7 +256,7 @@ pub const Font = struct {
             if (f == null) {
                 log.warn("Failed to open secondary symbol fallback font: {s}", .{c.SDL_GetError()});
             } else {
-                _ = c.TTF_SetFontDirection(f.?, c.TTF_DIRECTION_LTR);
+                configureFace(f.?);
             }
             break :blk f;
         } else null;
@@ -258,7 +267,7 @@ pub const Font = struct {
             if (f == null) {
                 log.warn("Failed to open emoji fallback font: {s}", .{c.SDL_GetError()});
             } else {
-                _ = c.TTF_SetFontDirection(f.?, c.TTF_DIRECTION_LTR);
+                configureFace(f.?);
             }
             break :blk f;
         } else null;
@@ -486,6 +495,20 @@ pub const Font = struct {
             .w = @round(dest_w),
             .h = @round(dest_h),
         };
+
+        // Faux weight: draw the glyph dilated +1px in each direction (at
+        // text_weight_alpha) UNDER the crisp main pass, so strokes fatten toward
+        // the macOS/VS Code look while the core stays sharp. Integer offsets keep
+        // it crisp; cell width is unchanged. Skip color emoji.
+        if (text_weight_alpha > 0 and fallback_choice != .emoji) {
+            _ = c.SDL_SetTextureAlphaMod(texture, text_weight_alpha);
+            const weight_offsets = [_][2]f32{ .{ 1, 0 }, .{ -1, 0 }, .{ 0, 1 }, .{ 0, -1 } };
+            for (weight_offsets) |off| {
+                const wr = c.SDL_FRect{ .x = dest_rect.x + off[0], .y = dest_rect.y + off[1], .w = dest_rect.w, .h = dest_rect.h };
+                _ = c.SDL_RenderTexture(self.renderer, texture, null, &wr);
+            }
+            _ = c.SDL_SetTextureAlphaMod(texture, 255);
+        }
 
         _ = c.SDL_RenderTexture(self.renderer, texture, null, &dest_rect);
     }
@@ -770,4 +793,12 @@ test "findOldestKey picks lowest seq" {
 
     const oldest = Font.findOldestKey(&map) orelse return error.TestExpectedResult;
     try std.testing.expect(std.meta.eql(oldest, k2));
+}
+
+/// Applies the shared per-face setup: left-to-right shaping plus light hinting.
+/// Light hinting keeps glyph stems closer to their true (smoother) shape instead
+/// of NORMAL's heavier grid-snapping — closer to the macOS/VS Code terminal look.
+fn configureFace(font: *c.TTF_Font) void {
+    _ = c.TTF_SetFontDirection(font, c.TTF_DIRECTION_LTR);
+    _ = c.TTF_SetFontHinting(font, c.TTF_HINTING_LIGHT);
 }

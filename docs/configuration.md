@@ -51,12 +51,13 @@ If the file doesn't exist, Architect creates a commented template on first run (
 
 ```toml
 [font]
-family = "SFNSMono"  # Font family name (default: SFNSMono on macOS)
+family = "Menlo"     # Font family name (default: Menlo on macOS)
 size = 14            # Base font size in points (default: 14)
 ```
 
 The font family must be installed on your system. Common choices:
-- `SFNSMono` (macOS system font, default)
+- `Menlo` (macOS terminal font, default — more body, smoother at low DPI)
+- `SFNSMono` (SF Mono — Apple system mono, thinner)
 - `MesloLGS NF` (Nerd Font with icons)
 - `JetBrains Mono`
 - `Fira Code`
