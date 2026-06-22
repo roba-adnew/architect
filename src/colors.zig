@@ -41,15 +41,6 @@ pub const Theme = struct {
     pub fn default() Theme {
         return fromConfig(.{});
     }
-
-    /// Get a palette color by index (0-15)
-    pub fn getPaletteColor(self: Theme, idx: u8) c.SDL_Color {
-        if (idx < 16) {
-            return self.palette[idx];
-        }
-        // Fallback for out-of-range (shouldn't happen for 0-15)
-        return self.palette[0];
-    }
 };
 
 /// Standard 16 ANSI colors (8 normal + 8 bright) using One Dark theme.

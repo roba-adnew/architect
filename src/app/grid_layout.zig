@@ -107,38 +107,9 @@ pub const GridLayout = struct {
         return active_count >= self.capacity();
     }
 
-    /// Check if the grid can shrink after removing a terminal.
-    pub fn canShrink(self: *const GridLayout, active_count: usize) bool {
-        if (active_count == 0) return self.cols > 1 or self.rows > 1;
-        const optimal = calculateDimensions(active_count);
-        return optimal.cols < self.cols or optimal.rows < self.rows;
-    }
-
     /// Convert session index to grid position.
     pub fn indexToPosition(self: *const GridLayout, idx: usize) GridPosition {
         return GridPosition.fromIndex(idx, self.cols);
-    }
-
-    /// Convert grid position to session index.
-    pub fn positionToIndex(self: *const GridLayout, pos: GridPosition) usize {
-        return pos.toIndex(self.cols);
-    }
-
-    /// Calculate pixel rect for a grid cell.
-    pub fn cellRect(
-        self: *const GridLayout,
-        pos: GridPosition,
-        render_width: c_int,
-        render_height: c_int,
-    ) Rect {
-        const cell_w = @divFloor(render_width, @as(c_int, @intCast(self.cols)));
-        const cell_h = @divFloor(render_height, @as(c_int, @intCast(self.rows)));
-        return Rect{
-            .x = @as(c_int, @intCast(pos.col)) * cell_w,
-            .y = @as(c_int, @intCast(pos.row)) * cell_h,
-            .w = cell_w,
-            .h = cell_h,
-        };
     }
 
     /// Start a grid resize animation.
@@ -241,13 +212,6 @@ pub const GridLayout = struct {
 
         // Session wasn't in the animation list - it's a new cell
         return null;
-    }
-
-    /// Get animation progress (0.0 to 1.0).
-    pub fn getResizeProgress(self: *const GridLayout, now: i64) f32 {
-        if (!self.is_resizing) return 1.0;
-        const elapsed = now - self.resize_start_time;
-        return @min(1.0, @as(f32, @floatFromInt(elapsed)) / @as(f32, animation_duration_ms));
     }
 
     fn interpolateRect(start: Rect, target: Rect, progress: f32) Rect {

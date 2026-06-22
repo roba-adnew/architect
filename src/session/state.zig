@@ -457,10 +457,6 @@ pub const SessionState = struct {
         try self.ensureSpawnedWithDir(working_dir, loop_opt);
     }
 
-    pub fn relaunchWithDir(self: *SessionState, working_dir: [:0]const u8, loop_opt: ?*xev.Loop) InitError!void {
-        return self.relaunch(working_dir, loop_opt);
-    }
-
     fn resetForRespawn(self: *SessionState) void {
         self.clearTerminalSelection();
         self.pending_write.clearAndFree(self.allocator);

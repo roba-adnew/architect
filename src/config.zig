@@ -28,10 +28,6 @@ pub const Color = struct {
 
         return .{ .r = r, .g = g, .b = b };
     }
-
-    pub fn toHex(self: Color, allocator: std.mem.Allocator) ![]u8 {
-        return std.fmt.allocPrint(allocator, "#{X:0>2}{X:0>2}{X:0>2}", .{ self.r, self.g, self.b });
-    }
 };
 
 pub const FontConfig = struct {
@@ -711,15 +707,6 @@ pub const Persistence = struct {
                 return;
             }
         }
-    }
-
-    /// Get the list of recent folder paths (read-only, sorted by frequency)
-    pub fn getRecentFolderPaths(self: *const Persistence, allocator: std.mem.Allocator) ![]const []const u8 {
-        const result = try allocator.alloc([]const u8, self.recent_folders.items.len);
-        for (self.recent_folders.items, 0..) |folder, idx| {
-            result[idx] = folder.path;
-        }
-        return result;
     }
 
     /// Get the list of recent folders (for overlay display)

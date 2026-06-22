@@ -13,7 +13,6 @@ pub const pill_group = @import("components/pill_group.zig");
 pub const toast = @import("components/toast.zig");
 pub const escape_hold = @import("components/escape_hold.zig");
 pub const restart_buttons = @import("components/restart_buttons.zig");
-pub const marquee_label = @import("components/marquee_label.zig");
 pub const quit_confirm = @import("components/quit_confirm.zig");
 pub const quit_blocking_overlay = @import("components/quit_blocking_overlay.zig");
 pub const confirm_dialog = @import("components/confirm_dialog.zig");
