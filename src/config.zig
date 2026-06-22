@@ -76,9 +76,8 @@ pub const GridConfig = struct {
 pub const UiConfig = struct {
     show_hotkey_feedback: bool = true,
     enable_animations: bool = true,
-    /// Alpha (0-255) of the accent overlay drawn over every pane when the
-    /// Architect window is NOT the frontmost app. 0 disables the overlay.
-    /// Higher = panes look more clearly "inactive" when you tab away.
+    /// Opacity (0-255) of the dashed accent border drawn around the selected
+    /// pane when the Architect window is NOT the frontmost app. 0 disables it.
     inactive_overlay_alpha: i32 = 130,
 };
 
@@ -883,7 +882,7 @@ pub const Config = struct {
             \\# [ui]
             \\# show_hotkey_feedback = true
             \\# enable_animations = true
-            \\# inactive_overlay_alpha = 130  # 0-255 accent dim over panes when app is not frontmost (0 = off)
+            \\# inactive_overlay_alpha = 130  # 0-255 opacity of the dashed "not focused" pane border (0 = off)
             \\
             \\# Notification options
             \\# [notifications]

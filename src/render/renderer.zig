@@ -26,6 +26,11 @@ const AnimationState = app_state.AnimationState;
 const GridLayout = grid_layout.GridLayout;
 
 const attention_thickness: c_int = 6;
+
+/// Set once per frame at the top of render(); read by the overlay helpers so the
+/// selected pane's border is solid when Architect is focused and dashed when it's
+/// in the background. Frame-scoped render state, not persisted UI state.
+var frame_window_focused: bool = true;
 pub const terminal_padding: c_int = 8;
 pub const grid_border_thickness: c_int = attention_thickness;
 const faint_factor: f32 = 0.6;
@@ -116,6 +121,7 @@ pub fn render(
     _ = c.SDL_SetRenderDrawColor(renderer, theme.background.r, theme.background.g, theme.background.b, 255);
     _ = c.SDL_RenderClear(renderer);
     std.debug.assert(sessions.len == views.len);
+    frame_window_focused = window_focused;
 
     // Use the larger dimension for grid scale to ensure proper scaling
     // Multiply by grid_font_scale to allow proportionally larger font in grid view
@@ -322,10 +328,11 @@ pub fn render(
         },
     }
 
-    // App-focus indicator: when the Architect window is NOT the frontmost app,
-    // wash ONLY the focused/selected pane in the accent colour, so you can tell
-    // which pane is active and that the app is in the background. When the
-    // window is focused, that pane shows only its border (no fill).
+    // App-focus indicator: when Architect is NOT the frontmost app, outline the
+    // selected pane (the whole window in Full view) with a dashed accent border.
+    // Solid border = focused; dashed = app in the background. Drawn fresh on top
+    // every frame so it tracks focus immediately. inactive_overlay_alpha gates it
+    // (0 = off) and sets the border's opacity.
     if (!window_focused and inactive_overlay_alpha > 0) {
         const focused_rect = switch (anim_state.mode) {
             .Grid, .GridResizing => Rect{
@@ -336,14 +343,15 @@ pub fn render(
             },
             else => Rect{ .x = 0, .y = 0, .w = window_width, .h = window_height },
         };
-        _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
-        _ = c.SDL_SetRenderDrawColor(renderer, theme.accent.r, theme.accent.g, theme.accent.b, inactive_overlay_alpha);
-        _ = c.SDL_RenderFillRect(renderer, &c.SDL_FRect{
-            .x = @floatFromInt(focused_rect.x),
-            .y = @floatFromInt(focused_rect.y),
-            .w = @floatFromInt(focused_rect.w),
-            .h = @floatFromInt(focused_rect.h),
-        });
+        const acc = theme.accent;
+        primitives.drawDashedBorder(
+            renderer,
+            focused_rect,
+            dpi.scale(attention_thickness, ui_scale),
+            dpi.scale(14, ui_scale),
+            dpi.scale(10, ui_scale),
+            .{ .r = acc.r, .g = acc.g, .b = acc.b, .a = inactive_overlay_alpha },
+        );
     }
 }
 
@@ -732,10 +740,10 @@ fn renderSessionOverlays(
             primitives.drawThickBorder(renderer, rect, border_thickness, border_radius, base_border);
         }
 
-        if (is_focused) {
-            // Selected pane: accent-coloured border ONLY (no fill). The accent
-            // fill that signals "window not focused" is drawn over just this
-            // pane in render(); when focused, the pane shows only this border.
+        if (is_focused and frame_window_focused) {
+            // Selected pane while Architect is focused: solid accent border. When
+            // the app is backgrounded, render() draws a dashed accent border here
+            // instead, so this solid one is suppressed to avoid doubling up.
             const focus_accent = theme.accent;
             const inset: c_int = if (has_attention) border_thickness else 0;
             var focus_rect = rect;
@@ -772,22 +780,18 @@ fn renderSessionOverlays(
         };
         primitives.drawThickBorder(renderer, rect, border_thickness, border_radius, color);
 
-        const tint_color = switch (view.status) {
-            .awaiting_approval => c.SDL_Color{ .r = yellow.r, .g = yellow.g, .b = yellow.b, .a = 55 },
-            .done => blk: {
-                break :blk c.SDL_Color{ .r = done_green.r, .g = done_green.g, .b = done_green.b, .a = 55 };
-            },
-            else => c.SDL_Color{ .r = yellow.r, .g = yellow.g, .b = yellow.b, .a = 55 },
-        };
-        _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
-        _ = c.SDL_SetRenderDrawColor(renderer, tint_color.r, tint_color.g, tint_color.b, tint_color.a);
-        const tint_rect = c.SDL_FRect{
-            .x = @floatFromInt(rect.x),
-            .y = @floatFromInt(rect.y),
-            .w = @floatFromInt(rect.w),
-            .h = @floatFromInt(rect.h),
-        };
-        _ = c.SDL_RenderFillRect(renderer, &tint_rect);
+        // "Needs you" (awaiting_approval) keeps a translucent fill overlay on top
+        // of its pulsing border so it really stands out; "done" is border-only.
+        if (view.status == .awaiting_approval) {
+            _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
+            _ = c.SDL_SetRenderDrawColor(renderer, yellow.r, yellow.g, yellow.b, 55);
+            _ = c.SDL_RenderFillRect(renderer, &c.SDL_FRect{
+                .x = @floatFromInt(rect.x),
+                .y = @floatFromInt(rect.y),
+                .w = @floatFromInt(rect.w),
+                .h = @floatFromInt(rect.h),
+            });
+        }
     }
 
     renderTerminalScrollbar(renderer, session, view, rect, theme, ui_scale);
