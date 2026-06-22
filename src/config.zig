@@ -565,6 +565,12 @@ pub const Persistence = struct {
     }
 
     pub fn getPersistencePath(allocator: std.mem.Allocator) ![]u8 {
+        // ARCHITECT_CONFIG_DIR overrides the config/persistence location so an
+        // isolated dev instance can run alongside the daily app without touching
+        // its config or resuming its sessions.
+        if (std.posix.getenv("ARCHITECT_CONFIG_DIR")) |dir| {
+            return try fs.path.join(allocator, &[_][]const u8{ dir, "persistence.toml" });
+        }
         const home = std.posix.getenv("HOME") orelse return error.HomeNotFound;
         return try fs.path.join(allocator, &[_][]const u8{ home, ".config", "architect", "persistence.toml" });
     }
@@ -830,6 +836,10 @@ pub const Config = struct {
     }
 
     pub fn getConfigPath(allocator: std.mem.Allocator) ![]u8 {
+        // See getPersistencePath: ARCHITECT_CONFIG_DIR isolates a dev instance.
+        if (std.posix.getenv("ARCHITECT_CONFIG_DIR")) |dir| {
+            return try fs.path.join(allocator, &[_][]const u8{ dir, "config.toml" });
+        }
         const home = std.posix.getenv("HOME") orelse return error.HomeNotFound;
         return try fs.path.join(allocator, &[_][]const u8{ home, ".config", "architect", "config.toml" });
     }

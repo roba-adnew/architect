@@ -16,6 +16,27 @@ if [[ -z "$ROOT" || ! -f "$ROOT/scripts/bundle-macos.sh" ]]; then
 fi
 cd "$ROOT"
 
+# Returns 0 if any descendant of pid $1 looks like a running agent CLI
+# (claude/codex/gemini) — i.e. restarting the app would kill a live agent.
+#
+# Reads pgrep output with `while IFS= read -r` (one pid per line) instead of
+# `for k in $kids`: the latter relies on word-splitting `$kids` on the ambient
+# IFS, and if IFS lacks a newline (seen in this shell), a multi-child pid list
+# collapses into a single bogus "p1\np2" token, `ps -p` on it fails, and the
+# walk silently misses every agent. The read loop is IFS-independent.
+reload_has_live_agents() {
+    local pid="$1" k args
+    while IFS= read -r k; do
+        [ -n "$k" ] || continue
+        args="$(ps -p "$k" -o args= 2>/dev/null || true)"
+        case "$args" in
+            *claude*|*codex*|*gemini*) return 0 ;;
+        esac
+        reload_has_live_agents "$k" && return 0
+    done < <(pgrep -P "$pid" 2>/dev/null)
+    return 1
+}
+
 # --- Ensure a working build toolchain + SDK ---
 # Preferred path: a Nix dev shell provides zig, a linkable SDK, and SDL3. If
 # zig is not on PATH but nix is, re-enter the flake dev shell and re-run there.
@@ -28,38 +49,23 @@ if ! command -v zig >/dev/null 2>&1; then
     exit 1
 fi
 
-# Native (Homebrew) build setup. Each line only fills in a value that isn't
-# already set, so this is a no-op inside a Nix dev shell that already provides them.
+# Native (Homebrew SDL3 + 15.4 SDK) build setup, shared with dev-instance.sh.
+# shellcheck source=scripts/dev-build-env.sh
+. "$ROOT/scripts/dev-build-env.sh"
 
-# SDL3 / SDL3_ttf: build.zig reads *_INCLUDE_PATH and derives the lib dir (../lib).
-if command -v brew >/dev/null 2>&1; then
-    : "${SDL3_INCLUDE_PATH:=$(brew --prefix sdl3 2>/dev/null)/include}"
-    : "${SDL3_TTF_INCLUDE_PATH:=$(brew --prefix sdl3_ttf 2>/dev/null)/include}"
-    export SDL3_INCLUDE_PATH SDL3_TTF_INCLUDE_PATH
-fi
-
-# Zig 0.15.2 cannot link the macOS 26.x SDK family (ziglang/zig#31756). Redirect
-# SDK discovery to the 15.4 SDK when present and DEVELOPER_DIR isn't already set.
-legacy_sdk="/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk"
-if [ -z "${DEVELOPER_DIR:-}" ] && [ -d "$legacy_sdk" ]; then
-    wr="$ROOT/.tmp/macos-sdk-workaround"
-    mkdir -p "$wr/bin" "$wr/developer/SDKs" "$wr/developer/usr/bin"
-    ln -sfn "$legacy_sdk" "$wr/developer/SDKs/MacOSX.sdk"
-    cat > "$wr/developer/usr/bin/xcrun" <<XCRUN
-#!/bin/sh
-if [ "\$1" = "--sdk" ] && [ "\$2" = "macosx" ] && [ "\$3" = "--show-sdk-path" ] && [ "\$#" -eq 3 ]; then
-    printf '%s\n' '$legacy_sdk'
-    exit 0
-fi
-exec env DEVELOPER_DIR= /usr/bin/xcrun "\$@"
-XCRUN
-    chmod +x "$wr/developer/usr/bin/xcrun"
-    ln -sfn "$wr/developer/usr/bin/xcrun" "$wr/bin/xcrun"
-    case ":$PATH:" in
-        *":$wr/bin:"*) ;;
-        *) export PATH="$wr/bin:$PATH" ;;
-    esac
-    export DEVELOPER_DIR="$wr/developer"
+# Reload guard: this restarts your DAILY /Applications app, which kills its
+# agents. A bridged Claude session can then resume from a stale local transcript
+# (recent context appears lost). Refuse when agents are live. To test changes
+# WITHOUT touching the daily app, use scripts/dev-instance.sh (isolated).
+if [ -z "${DEV_RELOAD_FORCE:-}" ] && [ -z "${DEV_RELOAD_BUILD_ONLY:-}" ]; then
+    arch_pid="$(pgrep -x architect | head -1 || true)"
+    if [ -n "$arch_pid" ] && reload_has_live_agents "$arch_pid"; then
+        echo "REFUSING: the running Architect has live agent sessions (claude/codex/gemini)." >&2
+        echo "Restarting it kills them, and a bridged resume can come back stale (lost context)." >&2
+        echo "  - Safe alternative: scripts/dev-instance.sh  (isolated dev instance, leaves this app alone)" >&2
+        echo "  - Reload anyway, accepting the risk:  DEV_RELOAD_FORCE=1 $0 $*" >&2
+        exit 1
+    fi
 fi
 
 # Default to an optimized ReleaseFast build — this replaces your daily-driver
