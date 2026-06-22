@@ -12,6 +12,35 @@ Set `ARCHITECT_CONFIG_DIR` to relocate **both** files to a different directory
 its own state without resuming or clobbering the daily app's sessions — see
 `scripts/dev-instance.sh` in `docs/development.md`.
 
+## Environment variables
+
+| Variable | Effect |
+|----------|--------|
+| `ARCHITECT_CONFIG_DIR` | Relocates `config.toml` + `persistence.toml` to the given directory (overrides `~/.config/architect/`). |
+| `ARCHITECT_PERSIST_SESSIONS` | `1`/`true` enables **persistent agent sessions** (opt-in, experimental). |
+
+### Persistent agent sessions (`ARCHITECT_PERSIST_SESSIONS`)
+
+When set to `1`, Architect spawns each shell inside a detached **tmux** session
+(requires `tmux` on `PATH`) instead of as a direct child process. The tmux server
+outlives Architect, so quitting and relaunching Architect — or a crash, or the
+reload script — reattaches to the *same live shell* with the agent's full
+in-memory context intact, instead of killing the agent and resuming it from a
+local transcript that can be stale (the bridged-resume "rewind"). See ADR-015 in
+`docs/ARCHITECTURE.md` for the full design.
+
+- **State location:** a private tmux socket and config live in
+  `${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/architect-tmux.sock` and `…/architect-tmux.conf`.
+  Sessions are named `architect-<slot>`. List them with
+  `tmux -S <socket> ls`; kill a stuck one with `tmux -S <socket> kill-session -t architect-<slot>`.
+- **Non-breaking:** unset (the default) spawns a direct shell exactly as before.
+- **Known limitations (phase 1):** the attention/approval border may not light up
+  on a *reattached* agent; deep scrollback above the visible screen is not
+  reconstructed on reattach (the conversation state is intact); a full machine
+  reboot loses the live session and falls back to a fresh shell; and only one
+  persistence-enabled Architect instance should run at a time (the socket and
+  session names are shared per user).
+
 ## config.toml
 
 User-editable preferences file. Changes take effect on next launch. Open it quickly with `Cmd+,`.

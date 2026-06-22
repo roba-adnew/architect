@@ -54,12 +54,15 @@ pub fn persistEnabled() bool {
 }
 
 /// Allocate a null-terminated formatted string. Caller owns the result.
+/// Uses a manual len+1 buffer (not allocSentinel) so freeing the returned
+/// `[:0]u8` matches the allocation size exactly.
 fn allocZ(allocator: std.mem.Allocator, comptime fmt: []const u8, args: anytype) ![:0]u8 {
     const s = try std.fmt.allocPrint(allocator, fmt, args);
     defer allocator.free(s);
-    const z = try allocator.allocSentinel(u8, s.len, 0);
-    @memcpy(z, s);
-    return z;
+    const buf = try allocator.alloc(u8, s.len + 1);
+    @memcpy(buf[0..s.len], s);
+    buf[s.len] = 0;
+    return buf[0..s.len :0];
 }
 
 /// Resolve an executable on PATH. Caller owns the returned string.
@@ -136,22 +139,4 @@ pub fn freePersist(allocator: std.mem.Allocator, p: Persist) void {
     allocator.free(p.socket_path);
     allocator.free(p.session_name);
     allocator.free(p.conf_path);
-}
-
-/// Does a tmux session already exist for this slot? Used to distinguish a live
-/// reattach from a fresh spawn (e.g. after a reboot killed the server). Runs
-/// `tmux -S <sock> has-session`; returns false on any error.
-pub fn hasSession(allocator: std.mem.Allocator, p: Persist) bool {
-    var child = std.process.Child.init(
-        &[_][]const u8{ p.tmux_path, "-S", p.socket_path, "has-session", "-t", p.session_name },
-        allocator,
-    );
-    child.stdin_behavior = .Ignore;
-    child.stdout_behavior = .Ignore;
-    child.stderr_behavior = .Ignore;
-    const term = child.spawnAndWait() catch return false;
-    return switch (term) {
-        .Exited => |code| code == 0,
-        else => false,
-    };
 }

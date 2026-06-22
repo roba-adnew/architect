@@ -88,6 +88,30 @@ named scratch dir with `ARCHITECT_DEV_CONFIG_DIR=/path ./scripts/dev-instance.sh
 The shared native build environment (Homebrew SDL3 + macOS 15.4 SDK workaround) lives
 in `scripts/dev-build-env.sh`, sourced by both scripts.
 
+## Persistent agent sessions (`ARCHITECT_PERSIST_SESSIONS`)
+
+Opt-in tmux-backed persistence (requires `tmux` on `PATH`) lets agents survive an
+Architect restart and reattach live instead of being resumed from a stale
+transcript. See `docs/configuration.md` and ADR-015 in `docs/ARCHITECTURE.md`.
+
+**Try it safely (isolated):**
+```bash
+ARCHITECT_PERSIST_SESSIONS=1 ./scripts/dev-instance.sh
+```
+Run an agent, quit the dev instance, relaunch with the same command — the agent
+reappears mid-conversation. Inspect the tmux state with
+`tmux -S "${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/architect-tmux.sock" ls`.
+
+**Enable it on the daily app:** bundle with the flag so it lands in the app's
+`Info.plist` (`open`/Finder does not inherit shell env):
+```bash
+ARCHITECT_PERSIST_SESSIONS=1 ./scripts/dev-reload.sh
+```
+One-time cost: the agents in your *current* (non-persistent) app are not in tmux,
+so the switch itself starts them fresh (best-effort `--resume` if a UUID was
+persisted). From the next restart on, sessions reattach live. To turn it back
+off, reload once without the flag.
+
 ## Dependencies and Tooling
 
 - **ghostty-vt** is fetched as a pinned tarball via the Zig package manager (`build.zig.zon`).

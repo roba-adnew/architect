@@ -406,6 +406,7 @@ Rotate: rename active file to architect-<UTC timestamp>.log and continue in new 
 | `session/state.zig` | Terminal session lifecycle: PTY, ghostty-vt, process watcher, foreground agent detection, graceful agent teardown at quit | `SessionState`, `AgentKind`, `init()`, `despawn()`, `deinit()`, `ensureSpawnedWithDir()`, `render_epoch`, `pending_write`, `detectForegroundAgent()`, `sendTermToForegroundPgrp()`, `drainOutputForMs()` | `shell`, `pty`, `vt_stream`, `cwd`, `font`, xev |
 | `session/notify.zig` | Background notification socket thread and queue; handles status and story notifications | `NotificationQueue`, `Notification` (union: status/story), `startThread()`, `push()`, `drain()` | std (socket, thread) |
 | `session/*` (shell, pty, vt_stream, cwd) | Shell spawning, PTY abstraction, VT parsing, working directory detection | `spawn()`, `Pty`, `VtStream.processBytes()`, `getCwd()` | std (posix), ghostty-vt |
+| `tmux.zig` | Optional tmux-backed session persistence (opt-in via `ARCHITECT_PERSIST_SESSIONS`): resolves tmux, manages a stable private socket + transparent-layer config, and builds the per-slot `new-session -A` wrapper so shells/agents survive an Architect restart and reattach live (see ADR-015) | `Persist`, `buildPersist()`, `freePersist()`, `persistEnabled()` | std (posix) |
 | `render/renderer.zig` | Scene rendering: terminals, borders, animations, terminal scrollbar painting | `render()`, `RenderCache`, per-session texture management | `font`, `font_cache`, `gfx/*`, `anim/easing`, `app/app_state`, `ui/components/scrollbar`, `c` |
 | `font.zig` + `font_cache.zig` | Font rendering, HarfBuzz shaping, glyph LRU cache, shared font cache | `Font`, `openFont()`, `renderGlyph()`, `FontCache`, `getOrCreate()` | `font_paths`, `c` (SDL3_ttf) |
 | `gfx/*` (box_drawing, primitives) | Procedural box-drawing characters (U+2500-U+257F), rounded/thick border helpers, bezier arrow rendering | `renderBoxDrawing()`, `drawRoundedRect()`, `drawThickBorder()`, `fillRoundedRect()`, `renderBezierArrow()` | `c` |
@@ -556,3 +557,26 @@ Rotate: rename active file to architect-<UTC timestamp>.log and continue in new 
   - *OSC/socket notification from agents* -- rejected because it requires agents to support a custom protocol; the PTY output approach works with unmodified agent binaries.
   - *Skip UUID persistence, always start fresh* -- rejected because it loses long-running agent context; resumption is a core user value.
 - **Date:** 2026-02-23 (agent session persistence)
+
+### ADR-015: tmux-Backed Persistent Agent Sessions (opt-in)
+
+- **Decision:** Behind the `ARCHITECT_PERSIST_SESSIONS=1` opt-in, spawn each shell *inside* a detached tmux session (`tmux -S <socket> -f <conf> new-session -A -s architect-<slot> ... -- <shell> -l`) instead of as a direct child of Architect. On restart, `new-session -A` reattaches to the live session, so a running agent (claude/codex/gemini) keeps its full in-memory context instead of being killed at quit and resumed from a possibly-stale local transcript.
+- **Context:** ADR-014 tears agents down at quit, scrapes their session UUID, and resumes via `claude --resume <uuid>` on next launch. When Claude Code's cloud bridge stalls local transcript writes, that resume reloads a rewound conversation — recent context appears lost. Making the agent process itself survive the restart sidesteps the resume path entirely for the common case (Architect restart while the machine stays up).
+- **Mechanism:**
+  - tmux's server double-forks out of Architect's process tree, so quitting Architect (or the reload script) only drops the thin client; the server, shell, and agent live on detached.
+  - `new-session -A` is create-or-attach: it creates the session on first launch and reattaches to the live one afterward. `-e` environment (session id, notify socket, resume command) applies only on fresh creation, so the resume-command fallback runs after a reboot but stays inert on a live reattach.
+  - A generated config (`architect-tmux.conf`) makes tmux a transparent layer: no status bar, `prefix None` + `unbind-key -a` (so Ctrl-B etc. pass through to the agent), `escape-time 0`, 50k-line scrollback, truecolor passthrough, `destroy-unattached off`.
+  - Quit needs no special-casing: at quit the PTY's foreground process is the tmux client, not the agent, so `detectForegroundAgent` returns null and the ADR-014 teardown naturally no-ops — the agent is never interrupted.
+  - Identity is per slot: the session is named `architect-<slot_index>` and the socket is a single stable per-user path, so reattach finds it across restarts.
+- **Layer boundary:** `tmux.zig` (a session-layer helper alongside `shell.zig`/`pty.zig`) owns tmux specifics; `shell.zig` builds the wrapped argv in the forked child; `session/state.zig` decides per-spawn whether to wrap. Null (flag unset) spawns a direct shell exactly as before, so the feature is strictly non-breaking.
+- **Known limitations (accepted; phase-1 scope):**
+  - *Attention border on reattach* — status notifications route by a per-spawn numeric id over a pid-based socket, both regenerated each launch, so a reattached agent's status (awaiting_approval, etc.) is not delivered/matched. Fixing it correctly requires a stable, persisted per-session identity.
+  - *Scrollback on reattach* — tmux repaints only the visible screen; Architect-side history above it is not reconstructed (it remains in tmux's 50k-line buffer). Conversation state is intact.
+  - *Full reboot* — when the tmux server is gone there is no live session to reattach; the slot falls back to a fresh shell (with `--resume` only if a UUID was previously persisted — best-effort and possibly stale).
+  - *Single instance* — the socket and per-slot session names are shared per user; two persistence-enabled Architect instances would collide on `architect-<slot>`.
+  - *Slot-name stability* — the session name follows `slot_index`, so closing or reordering sessions between restarts can attach a slot to a different conversation. A stable persisted token would fix this.
+  - *TERM inside tmux* is `screen-256color` (+truecolor), not `xterm-ghostty`; some ghostty-specific keyboard-protocol features do not pass through tmux.
+- **Alternatives considered:**
+  - *dtach / abduco* — lighter, but no scrollback preservation on reattach (blank history above the input box) and an extra dependency; tmux was already installed and repaints the visible screen.
+  - *An Architect-owned detached PTY daemon* — no external dependency and full control of scrollback replay, but the most engineering and the highest risk (PTY/socket/detach edge cases).
+- **Date:** 2026-06-22 (persistent sessions, phase 1)

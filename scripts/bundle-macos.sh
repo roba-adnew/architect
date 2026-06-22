@@ -65,6 +65,20 @@ fi
 rm -rf "$APP_DIR"
 mkdir -p "$LIB_DIR" "$RESOURCES_DIR" "$SHARE_DIR"
 
+# Optionally bake the persistent-sessions opt-in into the bundle. A bundled app
+# launched via `open`/Finder does NOT inherit the shell environment, so the env
+# var must live in Info.plist (LSEnvironment) to reach the daily app. Gated on
+# the bundle-time env so a plain bundle stays unchanged.
+PERSIST_PLIST=""
+if [[ "${ARCHITECT_PERSIST_SESSIONS:-}" == "1" || "${ARCHITECT_PERSIST_SESSIONS:-}" == "true" ]]; then
+    PERSIST_PLIST="    <key>LSEnvironment</key>
+    <dict>
+      <key>ARCHITECT_PERSIST_SESSIONS</key>
+      <string>1</string>
+    </dict>"
+    echo "Baking ARCHITECT_PERSIST_SESSIONS=1 into the app bundle (persistent agent sessions enabled)"
+fi
+
 cat > "$CONTENTS_DIR/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -82,6 +96,7 @@ cat > "$CONTENTS_DIR/Info.plist" <<EOF
     <string>architect</string>
     <key>CFBundleIconFile</key>
     <string>${APP_NAME}</string>
+${PERSIST_PLIST}
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSAppleEventsUsageDescription</key>
