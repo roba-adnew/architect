@@ -27,8 +27,12 @@ pub fn gridNavShortcut(key: c.SDL_Keycode, mod: c.SDL_Keymod) ?GridNavDirection 
     };
 }
 
+/// Whether a plain Esc key-up should be forwarded to the focused program. Esc
+/// is a passthrough key (Claude Code's Esc / Esc-Esc rewind, vim's Esc, ...) in
+/// both grid and full views — in grid it goes to the focused (highlighted) pane,
+/// same as typed keys. Only the brief grid transition animations are excluded.
 pub fn canHandleEscapePress(mode: app_state.ViewMode) bool {
-    return mode != .Grid and mode != .Collapsing and mode != .GridResizing;
+    return mode != .Collapsing and mode != .GridResizing;
 }
 
 /// Returns terminal index (0-9) for Cmd+1..9,0 shortcuts.
