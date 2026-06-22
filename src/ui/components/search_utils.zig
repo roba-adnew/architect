@@ -23,15 +23,10 @@ pub const TextTex = struct {
 };
 
 pub fn findCaseInsensitive(haystack: []const u8, needle: []const u8, from: usize) ?usize {
+    // Guards preserve the original edge behavior (empty needle / out-of-range
+    // `from` → null) that std.ascii.indexOfIgnoreCasePos doesn't special-case.
     if (needle.len == 0 or haystack.len < needle.len or from >= haystack.len) return null;
-
-    var pos = from;
-    while (pos + needle.len <= haystack.len) : (pos += 1) {
-        if (std.ascii.eqlIgnoreCase(haystack[pos .. pos + needle.len], needle)) {
-            return pos;
-        }
-    }
-    return null;
+    return std.ascii.indexOfIgnoreCasePos(haystack, from, needle);
 }
 
 /// Rebuild search matches across an array of plain text lines.

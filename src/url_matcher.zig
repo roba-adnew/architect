@@ -23,35 +23,12 @@ pub const UrlMatch = struct {
     end: usize,
 };
 
+/// Returns just the URL slice at `col`, or null. Thin wrapper over
+/// findUrlMatchAtPosition; the tests below exercise the shared parsing logic
+/// through this slice-only view.
 pub fn findUrlAtPosition(text: []const u8, col: usize) ?[]const u8 {
-    if (text.len == 0 or col >= text.len) return null;
-
-    var start_pos: usize = 0;
-    var end_pos: usize = text.len;
-
-    for (url_schemes) |scheme| {
-        var search_start: usize = 0;
-        while (std.mem.indexOfPos(u8, text, search_start, scheme)) |scheme_pos| {
-            const url_start = scheme_pos;
-            var url_end = scheme_pos + scheme.len;
-
-            while (url_end < text.len and isUrlChar(text[url_end])) {
-                url_end += 1;
-            }
-
-            url_end = trimUrlEnd(text[url_start..url_end]).len + url_start;
-
-            if (col >= url_start and col < url_end) {
-                start_pos = url_start;
-                end_pos = url_end;
-                return text[start_pos..end_pos];
-            }
-
-            search_start = scheme_pos + 1;
-        }
-    }
-
-    return null;
+    const m = findUrlMatchAtPosition(text, col) orelse return null;
+    return m.url;
 }
 
 pub fn findUrlMatchAtPosition(text: []const u8, col: usize) ?UrlMatch {

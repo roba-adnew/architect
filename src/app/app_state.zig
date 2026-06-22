@@ -33,12 +33,8 @@ pub const AnimationState = struct {
     start_rect: Rect,
     target_rect: Rect,
 
-    pub fn easeInOutCubic(t: f32) f32 {
-        return easing.easeInOutCubic(t);
-    }
-
     pub fn interpolateRect(start: Rect, target: Rect, progress: f32) Rect {
-        const eased = easeInOutCubic(progress);
+        const eased = easing.easeInOutCubic(progress);
         return Rect{
             .x = start.x + @as(c_int, @intFromFloat(@as(f32, @floatFromInt(target.x - start.x)) * eased)),
             .y = start.y + @as(c_int, @intFromFloat(@as(f32, @floatFromInt(target.y - start.y)) * eased)),
@@ -59,11 +55,11 @@ pub const AnimationState = struct {
     }
 };
 
-test "AnimationState.easeInOutCubic" {
-    try std.testing.expectEqual(@as(f32, 0.0), AnimationState.easeInOutCubic(0.0));
-    try std.testing.expectEqual(@as(f32, 1.0), AnimationState.easeInOutCubic(1.0));
+test "easeInOutCubic" {
+    try std.testing.expectEqual(@as(f32, 0.0), easing.easeInOutCubic(0.0));
+    try std.testing.expectEqual(@as(f32, 1.0), easing.easeInOutCubic(1.0));
 
-    const mid = AnimationState.easeInOutCubic(0.5);
+    const mid = easing.easeInOutCubic(0.5);
     try std.testing.expect(mid > 0.4 and mid < 0.6);
 }
 

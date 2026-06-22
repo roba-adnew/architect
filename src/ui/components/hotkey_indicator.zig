@@ -232,23 +232,13 @@ pub const HotkeyIndicatorComponent = struct {
     };
 };
 
-const log_global = std.log.scoped(.hotkey_indicator);
-
+/// Counts UTF-8 codepoints by counting non-continuation bytes (any byte that
+/// isn't 0b10xxxxxx). Equals the codepoint count for valid UTF-8 and degrades
+/// gracefully on truncated/invalid input — no error path needed for display width.
 fn countCodepoints(bytes: []const u8) usize {
-    var idx: usize = 0;
     var total: usize = 0;
-    while (idx < bytes.len) {
-        const seq_len = std.unicode.utf8ByteSequenceLength(bytes[idx]) catch |err| blk: {
-            log_global.warn("invalid UTF-8 sequence length: {}", .{err});
-            break :blk 1;
-        };
-        const end = @min(idx + seq_len, bytes.len);
-        _ = std.unicode.utf8Decode(bytes[idx..end]) catch |err| blk: {
-            log_global.warn("failed to decode UTF-8: {}", .{err});
-            break :blk 0xFFFD;
-        };
-        total += 1;
-        idx = end;
+    for (bytes) |b| {
+        if (b & 0xC0 != 0x80) total += 1;
     }
     return total;
 }

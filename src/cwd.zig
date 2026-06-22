@@ -47,20 +47,11 @@ pub fn getCwd(allocator: std.mem.Allocator, pid: std.c.pid_t) CwdError![]const u
 }
 
 pub fn getBasename(path: []const u8) []const u8 {
-    if (path.len == 0) return "";
-
-    var i = path.len - 1;
-    while (i > 0 and path[i] == '/') : (i -= 1) {}
-
-    const end = i + 1;
-
-    while (i > 0 and path[i] != '/') : (i -= 1) {}
-
-    const start = if (i == 0 and path[0] != '/') 0 else i + 1;
-
-    if (start >= end) return "/";
-
-    return path[start..end];
+    // std handles the component split; the guard restores this module's edge
+    // behavior: root ("/") → "/" rather than "", and empty stays empty.
+    const base = std.fs.path.basename(path);
+    if (base.len > 0) return base;
+    return if (path.len == 0) "" else "/";
 }
 
 test "getBasename - simple path" {

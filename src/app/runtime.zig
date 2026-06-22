@@ -3412,6 +3412,8 @@ pub fn run() !void {
     persistence.deinit(allocator);
 }
 
+// ponytail: manual len+1 [] buffer, not allocator.dupeZ — dupeZ's [:0] return
+// trips the zwanzig sentinel-alloc lint here; this keeps free sizes unambiguous.
 fn allocZ(allocator: std.mem.Allocator, data: []const u8) ![]u8 {
     const buf = try allocator.alloc(u8, data.len + 1);
     @memcpy(buf[0..data.len], data);

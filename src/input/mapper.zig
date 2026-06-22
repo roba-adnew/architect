@@ -461,6 +461,21 @@ test "encodeKeyWithMod - ctrl+tab kitty mode" {
 
 pub const MouseScrollDirection = enum { up, down };
 
+/// Writes the 6-byte X10 mouse sequence ESC [ M <byte> <col+33> <row+33>.
+/// Coordinates are clamped so (coord + 33) fits in one byte. Returns 0 if buf is too small.
+fn encodeMouseX10(byte: u8, col: u16, row: u16, buf: []u8) usize {
+    if (buf.len < 6) return 0;
+    const x10_offset: u16 = 33;
+    const x10_coord_max: u16 = 255 - x10_offset;
+    buf[0] = '\x1b';
+    buf[1] = '[';
+    buf[2] = 'M';
+    buf[3] = byte;
+    buf[4] = @intCast(@min(col, x10_coord_max) + x10_offset);
+    buf[5] = @intCast(@min(row, x10_coord_max) + x10_offset);
+    return 6;
+}
+
 /// Encodes a mouse scroll event for terminal mouse tracking.
 /// When sgr_format is true, uses SGR format: CSI < button ; col ; row M
 /// When sgr_format is false, uses X10 format: CSI M <button+32> <col+33> <row+33>
@@ -484,19 +499,7 @@ pub fn encodeMouseScroll(
         return result.len;
     } else {
         // X10 mouse format: ESC [ M <button+32> <col+33> <row+33>
-        // Clamp coordinates so (coord + 33) fits in a single byte.
-        const x10_offset: u16 = 33;
-        const x10_coord_max: u16 = 255 - x10_offset;
-        const x = @min(col, x10_coord_max) + x10_offset;
-        const y = @min(row, x10_coord_max) + x10_offset;
-        if (buf.len < 6) return 0;
-        buf[0] = '\x1b';
-        buf[1] = '[';
-        buf[2] = 'M';
-        buf[3] = button + 32;
-        buf[4] = @intCast(x);
-        buf[5] = @intCast(y);
-        return 6;
+        return encodeMouseX10(button + 32, col, row, buf);
     }
 }
 
@@ -558,18 +561,7 @@ pub fn encodeMouseButton(
         return result.len;
     } else {
         const x10_btn: u8 = if (press) btn else 3; // 3 = release indicator in X10
-        const x10_offset: u16 = 33;
-        const x10_coord_max: u16 = 255 - x10_offset;
-        const x = @min(col, x10_coord_max) + x10_offset;
-        const y = @min(row, x10_coord_max) + x10_offset;
-        if (buf.len < 6) return 0;
-        buf[0] = '\x1b';
-        buf[1] = '[';
-        buf[2] = 'M';
-        buf[3] = x10_btn + 32;
-        buf[4] = @intCast(x);
-        buf[5] = @intCast(y);
-        return 6;
+        return encodeMouseX10(x10_btn + 32, col, row, buf);
     }
 }
 
@@ -590,18 +582,7 @@ pub fn encodeMouseMotion(
         const result = std.fmt.bufPrint(buf, "\x1b[<{d};{d};{d}M", .{ code, col + 1, row + 1 }) catch return 0;
         return result.len;
     } else {
-        const x10_offset: u16 = 33;
-        const x10_coord_max: u16 = 255 - x10_offset;
-        const x = @min(col, x10_coord_max) + x10_offset;
-        const y = @min(row, x10_coord_max) + x10_offset;
-        if (buf.len < 6) return 0;
-        buf[0] = '\x1b';
-        buf[1] = '[';
-        buf[2] = 'M';
-        buf[3] = code + 32;
-        buf[4] = @intCast(x);
-        buf[5] = @intCast(y);
-        return 6;
+        return encodeMouseX10(code + 32, col, row, buf);
     }
 }
 
