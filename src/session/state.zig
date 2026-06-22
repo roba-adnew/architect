@@ -5,6 +5,7 @@ const xev = @import("xev");
 const ghostty_vt = @import("ghostty-vt");
 const shell_mod = @import("../shell.zig");
 const pty_mod = @import("../pty.zig");
+const tmux = @import("../tmux.zig");
 const colors_mod = @import("../colors.zig");
 const fs = std.fs;
 const cwd_mod = if (builtin.os.tag == .macos) @import("../cwd.zig") else struct {};
@@ -206,6 +207,14 @@ pub const SessionState = struct {
         self.process_generation +%= 1;
         self.assignNewSessionId();
 
+        // Optional tmux-backed persistence: when ARCHITECT_PERSIST_SESSIONS=1 and
+        // tmux is available, the shell is wrapped in a detached tmux session so
+        // it survives an Architect restart. Null (the default) spawns a direct
+        // shell exactly as before. Freed after spawn — the forked child reads its
+        // own copy-on-write copy of these strings, so freeing here is safe.
+        const persist = tmux.buildPersist(self.allocator, self.slot_index);
+        defer if (persist) |p| tmux.freePersist(self.allocator, p);
+
         const shell = try shell_mod.Shell.spawn(
             self.shell_path,
             self.pty_size,
@@ -213,6 +222,7 @@ pub const SessionState = struct {
             self.notify_sock_z,
             working_dir,
             self.resume_cmd,
+            persist,
         );
         errdefer {
             var s = shell;

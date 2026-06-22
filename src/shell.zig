@@ -4,6 +4,7 @@ const std = @import("std");
 const assets = @import("assets");
 const posix = std.posix;
 const pty_mod = @import("pty.zig");
+const tmux = @import("tmux.zig");
 const libc = @cImport({
     @cInclude("stdlib.h");
 });
@@ -1082,7 +1083,7 @@ pub const Shell = struct {
     const name_sock: [:0]const u8 = "ARCHITECT_NOTIFY_SOCK\x00";
     const name_resume: [:0]const u8 = "ARCHITECT_RESUME_CMD\x00";
 
-    pub fn spawn(shell_path: []const u8, size: pty_mod.winsize, session_id: [:0]const u8, notify_sock: [:0]const u8, working_dir: ?[:0]const u8, resume_cmd: ?[]const u8) SpawnError!Shell {
+    pub fn spawn(shell_path: []const u8, size: pty_mod.winsize, session_id: [:0]const u8, notify_sock: [:0]const u8, working_dir: ?[:0]const u8, resume_cmd: ?[]const u8, persist: ?tmux.Persist) SpawnError!Shell {
         // Ensure terminfo is set up (parent process, before fork)
         ensureTerminfoSetup();
         ensureArchitectCommandSetup();
@@ -1159,6 +1160,85 @@ pub const Shell = struct {
 
             const shell_path_z = @as([*:0]const u8, @ptrCast(shell_path.ptr));
             const login_flag = "-l\x00";
+
+            if (persist) |p| {
+                // Wrap the shell in a detached tmux session so it survives an
+                // Architect restart. `new-session -A` creates the session on
+                // first launch and reattaches to the live one afterward, so the
+                // running agent reappears with full in-memory context instead of
+                // being resumed from a stale transcript. The `-e` vars only take
+                // effect on fresh creation (ignored on reattach), which is
+                // exactly when the resume-command fallback should run.
+                //
+                // Buffers are filled here in the (post-fork) child's own stack;
+                // bufPrintZ does not allocate, so it is safe before execve.
+                var cols_buf: [8]u8 = undefined;
+                var rows_buf: [8]u8 = undefined;
+                var sess_buf: [64]u8 = undefined;
+                var sock_buf: [192]u8 = undefined;
+                var resume_buf: [560]u8 = undefined;
+
+                const cols_z = std.fmt.bufPrintZ(&cols_buf, "{d}", .{size.ws_col}) catch std.c._exit(1);
+                const rows_z = std.fmt.bufPrintZ(&rows_buf, "{d}", .{size.ws_row}) catch std.c._exit(1);
+                const sess_z = std.fmt.bufPrintZ(&sess_buf, "ARCHITECT_SESSION_ID={s}", .{session_id}) catch std.c._exit(1);
+                const sock_z = std.fmt.bufPrintZ(&sock_buf, "ARCHITECT_NOTIFY_SOCK={s}", .{notify_sock}) catch std.c._exit(1);
+
+                var argv: [24]?[*:0]const u8 = undefined;
+                var n: usize = 0;
+                argv[n] = p.tmux_path.ptr;
+                n += 1;
+                argv[n] = "-S";
+                n += 1;
+                argv[n] = p.socket_path.ptr;
+                n += 1;
+                argv[n] = "-f";
+                n += 1;
+                argv[n] = p.conf_path.ptr;
+                n += 1;
+                argv[n] = "new-session";
+                n += 1;
+                argv[n] = "-A";
+                n += 1;
+                argv[n] = "-s";
+                n += 1;
+                argv[n] = p.session_name.ptr;
+                n += 1;
+                argv[n] = "-x";
+                n += 1;
+                argv[n] = cols_z.ptr;
+                n += 1;
+                argv[n] = "-y";
+                n += 1;
+                argv[n] = rows_z.ptr;
+                n += 1;
+                argv[n] = "-e";
+                n += 1;
+                argv[n] = sess_z.ptr;
+                n += 1;
+                argv[n] = "-e";
+                n += 1;
+                argv[n] = sock_z.ptr;
+                n += 1;
+                if (resume_cmd) |rc| {
+                    if (std.fmt.bufPrintZ(&resume_buf, "ARCHITECT_RESUME_CMD={s}", .{rc})) |rz| {
+                        argv[n] = "-e";
+                        n += 1;
+                        argv[n] = rz.ptr;
+                        n += 1;
+                    } else |_| {}
+                }
+                argv[n] = "--";
+                n += 1;
+                argv[n] = shell_path_z;
+                n += 1;
+                argv[n] = login_flag;
+                n += 1;
+                argv[n] = null;
+
+                _ = std.c.execve(p.tmux_path.ptr, @ptrCast(&argv), @ptrCast(std.c.environ));
+                std.c._exit(1);
+            }
+
             const argv = [_:null]?[*:0]const u8{ shell_path_z, login_flag, null };
 
             _ = std.c.execve(shell_path_z, &argv, @ptrCast(std.c.environ));
