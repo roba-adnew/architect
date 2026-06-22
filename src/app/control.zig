@@ -782,10 +782,6 @@ fn discoveryPayloadAlloc(allocator: std.mem.Allocator, socket_path: []const u8) 
     return try allocator.dupe(u8, out.written());
 }
 
-fn readLineFromFd(allocator: std.mem.Allocator, fd: posix.fd_t, max_bytes: usize) ![]u8 {
-    return try readLineFromFdWithTimeout(allocator, fd, max_bytes, null);
-}
-
 fn readLineFromFdWithTimeout(
     allocator: std.mem.Allocator,
     fd: posix.fd_t,
@@ -975,7 +971,7 @@ pub fn connectAndSendSpawnRequest(
     defer allocator.free(payload);
     try writeAllFd(connection.fd, payload);
 
-    const response_bytes = try readLineFromFd(allocator, connection.fd, max_message_bytes);
+    const response_bytes = try readLineFromFdWithTimeout(allocator, connection.fd, max_message_bytes, null);
     defer allocator.free(response_bytes);
     return try parseControlResponse(allocator, response_bytes);
 }
@@ -995,7 +991,7 @@ pub fn connectAndSendCloseRequest(
     defer allocator.free(payload);
     try writeAllFd(connection.fd, payload);
 
-    const response_bytes = try readLineFromFd(allocator, connection.fd, max_message_bytes);
+    const response_bytes = try readLineFromFdWithTimeout(allocator, connection.fd, max_message_bytes, null);
     defer allocator.free(response_bytes);
     return try parseControlCloseResponse(allocator, response_bytes);
 }

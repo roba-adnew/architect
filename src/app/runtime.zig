@@ -233,7 +233,7 @@ fn setResumeCommandFromEntry(
     const agent_type_str = entry.agent_type orelse return;
     const session_id = entry.agent_session_id orelse return;
     if (session_id.len == 0) return;
-    const agent_kind = session_state.AgentKind.fromString(agent_type_str) orelse return;
+    const agent_kind = session_state.AgentKind.fromComm(agent_type_str) orelse return;
     const cmd = terminal_history.buildResumeCommand(allocator, agent_kind, session_id) catch |err| {
         log.warn("failed to build resume command for slot {d}: {}", .{ session.slot_index, err });
         return;
@@ -250,7 +250,7 @@ fn seedSessionAgentMetadataFromEntry(
     const agent_type_str = entry.agent_type orelse return;
     const session_id = entry.agent_session_id orelse return;
     if (session_id.len == 0) return;
-    const agent_kind = session_state.AgentKind.fromString(agent_type_str) orelse return;
+    const agent_kind = session_state.AgentKind.fromComm(agent_type_str) orelse return;
 
     session.agent_kind = agent_kind;
     if (session.agent_session_id) |sid| {
@@ -328,10 +328,6 @@ fn highestSpawnedIndex(sessions: []const *SessionState) ?usize {
         if (sessions[idx].spawned) return idx;
     }
     return null;
-}
-
-fn agentProcessStarted(session: *const SessionState) bool {
-    return session.hasForegroundProcess();
 }
 
 fn adjustedRenderHeightForMode(mode: app_state.ViewMode, render_height: c_int, ui_scale: f32, grid_rows: usize) c_int {
@@ -2793,7 +2789,7 @@ pub fn run() !void {
                         allocator.free(s.session_id);
                     }
                     const session_idx = findSessionIndexById(sessions, s.session) orelse continue;
-                    const agent_kind = session_state.AgentKind.fromString(s.agent) orelse continue;
+                    const agent_kind = session_state.AgentKind.fromComm(s.agent) orelse continue;
                     const session = sessions[session_idx];
                     // Skip if nothing changed, to avoid needless persistence churn.
                     const unchanged = session.agent_metadata_captured and
@@ -2817,7 +2813,7 @@ pub fn run() !void {
 
         if (pending_comment_send) |pcs| {
             const prompt_ready = pcs.session < sessions.len and
-                agentProcessStarted(sessions[pcs.session]);
+                sessions[pcs.session].hasForegroundProcess();
             if (now >= pcs.send_after_ms or prompt_ready) {
                 if (pcs.session < sessions.len) {
                     sessions[pcs.session].sendInput(pcs.text) catch |err| {

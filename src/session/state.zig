@@ -31,10 +31,6 @@ pub const AgentKind = enum {
         return null;
     }
 
-    pub fn fromString(s: []const u8) ?AgentKind {
-        return fromComm(s);
-    }
-
     /// Returns the agent kind if any known agent name appears as a complete
     /// path component in path.
     pub fn fromPath(path: []const u8) ?AgentKind {
@@ -728,7 +724,7 @@ pub const SessionState = struct {
 
     fn seedCwd(self: *SessionState, working_dir: ?[:0]const u8) !void {
         if (working_dir) |dir| {
-            try self.replaceCwdPath(sliceToZ(dir));
+            try self.replaceCwdPath(std.mem.sliceTo(dir, 0));
             return;
         }
 
@@ -960,10 +956,6 @@ fn basenameForDisplay(path: []const u8) []const u8 {
         return cwd_mod.getBasename(path);
     }
     return fs.path.basename(path);
-}
-
-fn sliceToZ(input: [:0]const u8) []const u8 {
-    return std.mem.sliceTo(input, 0);
 }
 
 fn getForegroundPgrp(child_pid: posix.pid_t) ?posix.pid_t {
@@ -1240,10 +1232,10 @@ test "AgentKind.fromComm recognises known agent names" {
     try std.testing.expect(AgentKind.fromComm("python") == null);
 }
 
-test "AgentKind.fromString round-trips through name()" {
+test "AgentKind.fromComm round-trips through name()" {
     inline for (.{ AgentKind.claude, AgentKind.codex, AgentKind.gemini }) |kind| {
         const s = kind.name();
-        try std.testing.expectEqual(kind, AgentKind.fromString(s).?);
+        try std.testing.expectEqual(kind, AgentKind.fromComm(s).?);
     }
 }
 

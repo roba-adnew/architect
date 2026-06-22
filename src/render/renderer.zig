@@ -563,7 +563,7 @@ fn renderSessionContent(
                 underline_count += 1;
             }
 
-            const is_box_drawing = cp != 0 and cp != ' ' and !style.flags.invisible and renderBoxDrawing(renderer, cp, x, y, eff_cw, eff_ch, fg_color);
+            const is_box_drawing = cp != 0 and cp != ' ' and !style.flags.invisible and box_drawing.render(renderer, cp, x, y, eff_cw, eff_ch, fg_color);
             if (is_box_drawing) {
                 try flushRun(font, run_buf[0..], run_len, run_x, y, run_cells, eff_cw, eff_ch, run_fg, run_variant);
                 run_len = 0;
@@ -1318,14 +1318,6 @@ fn chooseCursorFg(theme: *const colors.Theme) c.SDL_Color {
     return theme.foreground;
 }
 
-fn renderBoxDrawing(renderer: *c.SDL_Renderer, cp: u21, x: c_int, y: c_int, w: c_int, h: c_int, color: c.SDL_Color) bool {
-    return box_drawing.render(renderer, cp, x, y, w, h, color);
-}
-
-fn isBoxDrawingChar(cp: u21) bool {
-    return cp >= 0x2500 and cp <= 0x257F;
-}
-
 fn isFullCellGlyph(cp: u21) bool {
-    return ((cp >= 0x2500 and cp <= 0x259F) and !isBoxDrawingChar(cp)) or (cp >= 0xE0B0 and cp <= 0xE0C8) or (cp == 0x2588);
+    return (cp >= 0x2580 and cp <= 0x259F) or (cp >= 0xE0B0 and cp <= 0xE0C8) or (cp == 0x2588);
 }
