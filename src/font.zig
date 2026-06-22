@@ -475,11 +475,16 @@ pub const Font = struct {
                 dest_y += (surface_center_y - glyph_center_y) * scale;
             }
         }
+        // Pixel-snap the glyph quad. The cached glyph texture is drawn at a
+        // centered, fractional x/y; at fractional positions SDL bilinear-samples
+        // it across pixel boundaries, which is what softens terminal text on a
+        // low-DPI (non-retina) display. Rounding to whole pixels keeps the
+        // already-rasterized glyph crisp.
         const dest_rect = c.SDL_FRect{
-            .x = dest_x,
-            .y = dest_y,
-            .w = dest_w,
-            .h = dest_h,
+            .x = @round(dest_x),
+            .y = @round(dest_y),
+            .w = @round(dest_w),
+            .h = @round(dest_h),
         };
 
         _ = c.SDL_RenderTexture(self.renderer, texture, null, &dest_rect);
