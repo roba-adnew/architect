@@ -107,6 +107,10 @@ pub fn render(
     anim_state: *const AnimationState,
     current_time: i64,
     font: *font_mod.Font,
+    /// Font opened at the grid's native cell size, rendered at grid_render_scale
+    /// (~1.0) in settled Grid views so small text stays crisp.
+    grid_font: *font_mod.Font,
+    grid_render_scale: f32,
     term_cols: u16,
     term_rows: u16,
     window_width: c_int,
@@ -165,7 +169,7 @@ pub fn render(
 
                     const entry = render_cache.entry(i);
                     const session_dims = sessionTermDims(session, term_cols, term_rows);
-                    try renderSessionCached(renderer, session, view, entry, cell_rect, grid_scale, i == anim_state.focused_session, true, true, currentWaveEffect(view, current_time), font, session_dims.cols, session_dims.rows, current_time, true, theme, ui_scale);
+                    try renderSessionCached(renderer, session, view, entry, cell_rect, grid_render_scale, i == anim_state.focused_session, true, true, currentWaveEffect(view, current_time), grid_font, session_dims.cols, session_dims.rows, current_time, true, theme, ui_scale);
                 }
             }
         },
@@ -294,7 +298,7 @@ pub fn render(
 
                 const entry = render_cache.entry(i);
                 const session_dims = sessionTermDims(session, term_cols, term_rows);
-                try renderSessionCached(renderer, session, &views[i], entry, cell_rect, grid_scale, i == anim_state.focused_session, true, false, currentWaveEffect(&views[i], current_time), font, session_dims.cols, session_dims.rows, current_time, true, theme, ui_scale);
+                try renderSessionCached(renderer, session, &views[i], entry, cell_rect, grid_render_scale, i == anim_state.focused_session, true, false, currentWaveEffect(&views[i], current_time), grid_font, session_dims.cols, session_dims.rows, current_time, true, theme, ui_scale);
             }
 
             // Render borders and overlays on top of the animated content.

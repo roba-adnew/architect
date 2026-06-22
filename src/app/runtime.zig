@@ -45,6 +45,9 @@ const initial_window_height = 900;
 const default_font_size: c_int = 14;
 const min_font_size: c_int = 8;
 const max_font_size: c_int = 96;
+/// Grid panes may need a smaller native font than the base floor so dense grids
+/// stay crisp (rendered near scale 1.0). It is fine for grid text to be tiny.
+const min_grid_font_size: c_int = 4;
 const font_step: c_int = 1;
 const ui_font_size: c_int = 18;
 const active_frame_ns: i128 = 16_666_667;
@@ -1627,6 +1630,17 @@ pub fn run() !void {
     var font = try initSharedFont(allocator, renderer, &shared_font_cache, layout.scaledFontSize(font_size, ui_scale));
     defer font.deinit();
     font.metrics = metrics_ptr;
+
+    // Grid view renders this second, non-owning Font (faces shared with
+    // shared_font_cache) opened at the grid's native cell size, so small text
+    // stays crisp instead of being GPU-downscaled. Rebuilt before render() when
+    // the target size or the font cache generation changes.
+    var grid_font = try initSharedFont(allocator, renderer, &shared_font_cache, layout.scaledFontSize(font_size, ui_scale));
+    defer grid_font.deinit();
+    grid_font.metrics = metrics_ptr;
+    var grid_font_size: c_int = layout.scaledFontSize(font_size, ui_scale);
+    var grid_font_generation: u64 = shared_font_cache.generation;
+    var grid_render_scale: f32 = 1.0;
 
     var ui_font = try initSharedFont(allocator, renderer, &ui_font_cache, layout.scaledFontSize(ui_font_size, ui_scale));
     defer ui_font.deinit();
@@ -3318,6 +3332,30 @@ pub fn run() !void {
         const should_render = animating or any_session_dirty or ui_needs_frame or processed_event or had_notifications or had_control_requests or last_render_stale;
 
         if (should_render) {
+            // Keep grid_font sized to the grid's native cell so Grid-view text is
+            // crisp. grid_render_scale lands ~1.0 (within one size step), versus
+            // the old heavy 1/grid_dim downscale of the base font.
+            {
+                const grid_dim = @max(grid.cols, grid.rows);
+                const eff_scale = (1.0 / @as(f32, @floatFromInt(grid_dim))) * config.grid.font_scale;
+                const target_w_f = @max(1.0, @as(f32, @floatFromInt(font.cell_width)) * eff_scale);
+                const target_h_f = @max(1.0, @as(f32, @floatFromInt(font.cell_height)) * eff_scale);
+                const desired = layout.gridFontSize(&shared_font_cache, @intFromFloat(target_w_f), @intFromFloat(target_h_f), min_grid_font_size, max_font_size);
+                if (desired != grid_font_size or shared_font_cache.generation != grid_font_generation) {
+                    if (initSharedFont(allocator, renderer, &shared_font_cache, desired)) |new_grid_font| {
+                        grid_font.deinit();
+                        grid_font = new_grid_font;
+                        grid_font.metrics = metrics_ptr;
+                        grid_font_size = desired;
+                        grid_font_generation = shared_font_cache.generation;
+                    } else |err| {
+                        log.warn("failed to rebuild grid font at size {d}: {}", .{ desired, err });
+                    }
+                }
+                const gfw: f32 = @floatFromInt(@max(1, grid_font.cell_width));
+                const gfh: f32 = @floatFromInt(@max(1, grid_font.cell_height));
+                grid_render_scale = @min(target_w_f / gfw, target_h_f / gfh);
+            }
             if (relaunch_trace_frames > 0) {
                 log.info("frame trace before render", .{});
             }
@@ -3333,6 +3371,8 @@ pub fn run() !void {
                 &anim_state,
                 now,
                 &font,
+                &grid_font,
+                grid_render_scale,
                 full_cols,
                 full_rows,
                 render_width,
