@@ -70,6 +70,24 @@ relaunches it. Use it to avoid restarting a stale binary after editing source â€
 the installed app alone never picks up source changes. The Claude Code skill
 `/reload-architect` runs the same script.
 
+**Reload guard.** `dev-reload.sh` refuses to run while the installed app has live
+agent descendants (`claude`/`codex`/`gemini`), because restarting it kills those
+agents mid-turn and a bridged `claude --resume` can come back from a stale (rewound)
+transcript. Override with `DEV_RELOAD_FORCE=1 ./scripts/dev-reload.sh` only when you
+accept losing that agent state.
+
+**Isolated dev instance (preferred while agents are running).** To test source
+changes without touching the daily app at all:
+```bash
+./scripts/dev-instance.sh
+```
+This builds the current worktree and launches a separate instance with its own
+config/persistence directory (`ARCHITECT_CONFIG_DIR`, default `~/.config/architect-dev`),
+so it never resumes, reads, or clobbers the daily app's agent sessions. Point it at a
+named scratch dir with `ARCHITECT_DEV_CONFIG_DIR=/path ./scripts/dev-instance.sh`.
+The shared native build environment (Homebrew SDL3 + macOS 15.4 SDK workaround) lives
+in `scripts/dev-build-env.sh`, sourced by both scripts.
+
 ## Dependencies and Tooling
 
 - **ghostty-vt** is fetched as a pinned tarball via the Zig package manager (`build.zig.zon`).

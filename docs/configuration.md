@@ -7,6 +7,11 @@ Architect stores its configuration in `~/.config/architect/` using two TOML file
 | `config.toml` | User preferences (theme, font, grid size) | User (via `Cmd+,`) |
 | `persistence.toml` | Runtime state (window position, font size, terminal cwds) | Application |
 
+Set `ARCHITECT_CONFIG_DIR` to relocate **both** files to a different directory
+(it overrides `~/.config/architect/`). This is how an isolated dev instance keeps
+its own state without resuming or clobbering the daily app's sessions — see
+`scripts/dev-instance.sh` in `docs/development.md`.
+
 ## config.toml
 
 User-editable preferences file. Changes take effect on next launch. Open it quickly with `Cmd+,`.
