@@ -11,6 +11,10 @@ const font_cache = @import("../../font_cache.zig");
 
 const log = std.log.scoped(.quit_confirm);
 
+/// "Undo close" countdown. When a quit is requested while terminals still have
+/// live processes, we don't block on a confirm dialog — we open a short window
+/// in which the user can undo. The accent border drains to transparent as the
+/// timer runs out; when it hits zero, the quit proceeds (queues .ConfirmQuit).
 pub const QuitConfirmComponent = struct {
     allocator: std.mem.Allocator,
     font_generation: u64 = 0,
@@ -20,8 +24,9 @@ pub const QuitConfirmComponent = struct {
     dirty: bool = true,
     process_count: usize = 0,
     escape_pressed: bool = false,
-    cancel_hovered: bool = false,
-    quit_hovered: bool = false,
+    undo_hovered: bool = false,
+    counting: bool = false,
+    deadline_ms: i64 = 0,
 
     title_tex: ?*c.SDL_Texture = null,
     title_w: c_int = 0,
@@ -32,29 +37,25 @@ pub const QuitConfirmComponent = struct {
     message_h: c_int = 0,
 
     const modal_width: c_int = 520;
-    const modal_height: c_int = 220;
+    const modal_height: c_int = 200;
     const modal_radius: c_int = 12;
     const padding: c_int = 24;
     const title_size: c_int = 22;
     const body_size: c_int = 16;
-    const button_width: c_int = 136;
+    const button_width: c_int = 160;
     const button_height: c_int = 40;
-    const button_gap: c_int = 12;
+
+    /// How long the undo window stays open before the quit proceeds.
+    const undo_window_ms: i64 = 4000;
 
     pub fn init(allocator: std.mem.Allocator) !*QuitConfirmComponent {
         const self = try allocator.create(QuitConfirmComponent);
-        self.* = .{
-            .allocator = allocator,
-        };
+        self.* = .{ .allocator = allocator };
         return self;
     }
 
     pub fn asComponent(self: *QuitConfirmComponent) UiComponent {
-        return .{
-            .ptr = self,
-            .vtable = &vtable,
-            .z_index = 2000,
-        };
+        return .{ .ptr = self, .vtable = &vtable, .z_index = 2000 };
     }
 
     pub fn destroy(self: *QuitConfirmComponent, renderer: *c.SDL_Renderer) void {
@@ -64,9 +65,12 @@ pub const QuitConfirmComponent = struct {
         _ = renderer;
     }
 
+    /// Begin the undo window. The deadline is armed on the next update() frame,
+    /// which carries host.now_ms.
     pub fn show(self: *QuitConfirmComponent, process_count: usize) void {
         self.visible = true;
         self.escape_pressed = false;
+        self.counting = false;
         if (process_count != self.process_count) {
             self.process_count = process_count;
             self.dirty = true;
@@ -75,10 +79,19 @@ pub const QuitConfirmComponent = struct {
 
     pub fn hide(self: *QuitConfirmComponent) void {
         self.visible = false;
+        self.counting = false;
     }
 
     pub fn isVisible(self: *QuitConfirmComponent) bool {
         return self.visible;
+    }
+
+    /// Fraction of the undo window remaining: 1.0 (just started) -> 0.0 (expired).
+    fn borderFraction(now_ms: i64, deadline_ms: i64) f32 {
+        const remaining = deadline_ms - now_ms;
+        if (remaining <= 0) return 0.0;
+        const f = @as(f32, @floatFromInt(remaining)) / @as(f32, @floatFromInt(undo_window_ms));
+        return if (f > 1.0) 1.0 else f;
     }
 
     fn handleEvent(self_ptr: *anyopaque, host: *const types.UiHost, event: *const c.SDL_Event, actions: *types.UiActionQueue) bool {
@@ -95,26 +108,24 @@ pub const QuitConfirmComponent = struct {
         if (!self.visible) return false;
 
         switch (event.type) {
-            c.SDL_EVENT_QUIT => {
-                return true;
-            },
+            c.SDL_EVENT_QUIT => return true,
             c.SDL_EVENT_KEY_DOWN => {
                 const key = event.key.key;
                 const mod = event.key.mod;
-                const is_confirm = key == c.SDLK_RETURN or key == c.SDLK_RETURN2 or key == c.SDLK_KP_ENTER or (key == c.SDLK_Q and (mod & c.SDL_KMOD_GUI) != 0);
-                if (is_confirm) {
+                // Cmd+Q / Enter again: skip the wait, quit now.
+                const quit_now = key == c.SDLK_RETURN or key == c.SDLK_RETURN2 or key == c.SDLK_KP_ENTER or (key == c.SDLK_Q and (mod & c.SDL_KMOD_GUI) != 0);
+                if (quit_now) {
                     actions.append(.ConfirmQuit) catch |err| {
                         log.warn("failed to queue quit confirmation: {}", .{err});
                     };
-                    self.visible = false;
+                    self.hide();
                     self.escape_pressed = false;
                     return true;
                 }
+                // Esc / Cmd+W: undo the close.
                 if (key == c.SDLK_ESCAPE or (key == c.SDLK_W and (mod & c.SDL_KMOD_GUI) != 0)) {
-                    if (key == c.SDLK_ESCAPE) {
-                        self.escape_pressed = true;
-                    }
-                    self.visible = false;
+                    if (key == c.SDLK_ESCAPE) self.escape_pressed = true;
+                    self.hide();
                     return true;
                 }
             },
@@ -122,31 +133,21 @@ pub const QuitConfirmComponent = struct {
                 const mouse_x: c_int = @intFromFloat(event.button.x);
                 const mouse_y: c_int = @intFromFloat(event.button.y);
                 const modal = self.modalRect(host);
-                const buttons = self.buttonRects(modal, host.ui_scale);
-                if (geom.containsPoint(buttons.quit, mouse_x, mouse_y)) {
-                    actions.append(.ConfirmQuit) catch |err| {
-                        log.warn("failed to queue quit confirmation: {}", .{err});
-                    };
-                    self.visible = false;
+                const undo = self.buttonRect(modal, host.ui_scale);
+                if (geom.containsPoint(undo, mouse_x, mouse_y)) {
+                    self.hide();
                     return true;
                 }
-                if (geom.containsPoint(buttons.cancel, mouse_x, mouse_y)) {
-                    self.visible = false;
-                    return true;
-                }
-                if (geom.containsPoint(modal, mouse_x, mouse_y)) {
-                    return true;
-                }
-                self.visible = false;
+                // Clicks elsewhere are swallowed (so they don't leak to a
+                // terminal) but don't cancel — the user must actively undo.
                 return true;
             },
             c.SDL_EVENT_MOUSE_MOTION => {
                 const mouse_x: c_int = @intFromFloat(event.motion.x);
                 const mouse_y: c_int = @intFromFloat(event.motion.y);
                 const modal = self.modalRect(host);
-                const buttons = self.buttonRects(modal, host.ui_scale);
-                self.cancel_hovered = geom.containsPoint(buttons.cancel, mouse_x, mouse_y);
-                self.quit_hovered = geom.containsPoint(buttons.quit, mouse_x, mouse_y);
+                const undo = self.buttonRect(modal, host.ui_scale);
+                self.undo_hovered = geom.containsPoint(undo, mouse_x, mouse_y);
             },
             else => {},
         }
@@ -159,7 +160,26 @@ pub const QuitConfirmComponent = struct {
         return self.visible;
     }
 
-    fn update(_: *anyopaque, _: *const types.UiHost, _: *types.UiActionQueue) void {}
+    fn update(self_ptr: *anyopaque, host: *const types.UiHost, actions: *types.UiActionQueue) void {
+        const self: *QuitConfirmComponent = @ptrCast(@alignCast(self_ptr));
+        if (!self.visible) return;
+        if (!self.counting) {
+            self.counting = true;
+            self.deadline_ms = host.now_ms + undo_window_ms;
+            return;
+        }
+        if (host.now_ms >= self.deadline_ms) {
+            actions.append(.ConfirmQuit) catch |err| {
+                log.warn("failed to queue quit on timer expiry: {}", .{err});
+            };
+            self.hide();
+        }
+    }
+
+    fn wantsFrame(self_ptr: *anyopaque, _: *const types.UiHost) bool {
+        const self: *QuitConfirmComponent = @ptrCast(@alignCast(self_ptr));
+        return self.visible;
+    }
 
     fn render(self_ptr: *anyopaque, host: *const types.UiHost, renderer: *c.SDL_Renderer, assets: *types.UiAssets) void {
         const self: *QuitConfirmComponent = @ptrCast(@alignCast(self_ptr));
@@ -180,7 +200,7 @@ pub const QuitConfirmComponent = struct {
         const body_fonts = cache.get(self.body_font_size) catch return;
 
         _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
-        _ = c.SDL_SetRenderDrawColor(renderer, 0, 0, 0, 170);
+        _ = c.SDL_SetRenderDrawColor(renderer, 0, 0, 0, 140);
         const overlay = c.SDL_FRect{
             .x = 0,
             .y = 0,
@@ -194,12 +214,16 @@ pub const QuitConfirmComponent = struct {
         const modal_r = dpi.scale(modal_radius, host.ui_scale);
         _ = c.SDL_SetRenderDrawColor(renderer, sel.r, sel.g, sel.b, 240);
         primitives.fillRoundedRect(renderer, modal, modal_r);
+
+        // Border timer: the accent ring drains clockwise around the box as the
+        // undo window elapses (full ring at 4s left -> nothing at 0).
+        const frac = borderFraction(host.now_ms, self.deadline_ms);
         const acc = host.theme.accent;
         _ = c.SDL_SetRenderDrawColor(renderer, acc.r, acc.g, acc.b, 255);
-        primitives.drawRoundedBorder(renderer, modal, modal_r);
+        primitives.drawRoundedBorderArc(renderer, modal, modal_r, frac);
 
         self.renderText(renderer, modal, host.ui_scale, title_tex, message_tex);
-        self.renderButtons(renderer, modal, host.ui_scale, host.theme, body_fonts.regular);
+        self.renderButton(renderer, modal, host.ui_scale, host.theme, body_fonts.regular);
     }
 
     fn renderText(self: *QuitConfirmComponent, renderer: *c.SDL_Renderer, modal: geom.Rect, ui_scale: f32, title_tex: *c.SDL_Texture, message_tex: *c.SDL_Texture) void {
@@ -224,24 +248,15 @@ pub const QuitConfirmComponent = struct {
         _ = c.SDL_RenderTexture(renderer, message_tex, null, &message_rect);
     }
 
-    fn renderButtons(self: *QuitConfirmComponent, renderer: *c.SDL_Renderer, modal: geom.Rect, ui_scale: f32, theme: *const colors.Theme, font: *c.TTF_Font) void {
-        const buttons = self.buttonRects(modal, ui_scale);
-
-        const cancel_rect = c.SDL_FRect{
-            .x = @floatFromInt(buttons.cancel.x),
-            .y = @floatFromInt(buttons.cancel.y),
-            .w = @floatFromInt(buttons.cancel.w),
-            .h = @floatFromInt(buttons.cancel.h),
+    fn renderButton(self: *QuitConfirmComponent, renderer: *c.SDL_Renderer, modal: geom.Rect, ui_scale: f32, theme: *const colors.Theme, font: *c.TTF_Font) void {
+        const rect = self.buttonRect(modal, ui_scale);
+        const frect = c.SDL_FRect{
+            .x = @floatFromInt(rect.x),
+            .y = @floatFromInt(rect.y),
+            .w = @floatFromInt(rect.w),
+            .h = @floatFromInt(rect.h),
         };
-        button.renderButton(renderer, font, cancel_rect, "Cancel", .default, theme, ui_scale, self.cancel_hovered);
-
-        const quit_rect = c.SDL_FRect{
-            .x = @floatFromInt(buttons.quit.x),
-            .y = @floatFromInt(buttons.quit.y),
-            .w = @floatFromInt(buttons.quit.w),
-            .h = @floatFromInt(buttons.quit.h),
-        };
-        button.renderButton(renderer, font, quit_rect, "Quit", .danger, theme, ui_scale, self.quit_hovered);
+        button.renderButton(renderer, font, frect, "Undo Close", .default, theme, ui_scale, self.undo_hovered);
     }
 
     fn modalRect(self: *QuitConfirmComponent, host: *const types.UiHost) geom.Rect {
@@ -256,18 +271,16 @@ pub const QuitConfirmComponent = struct {
         };
     }
 
-    fn buttonRects(self: *QuitConfirmComponent, modal: geom.Rect, ui_scale: f32) struct { cancel: geom.Rect, quit: geom.Rect } {
+    fn buttonRect(self: *QuitConfirmComponent, modal: geom.Rect, ui_scale: f32) geom.Rect {
         _ = self;
         const button_w = dpi.scale(button_width, ui_scale);
         const button_h = dpi.scale(button_height, ui_scale);
-        const gap = dpi.scale(button_gap, ui_scale);
         const scaled_padding = dpi.scale(padding, ui_scale);
-        const total_w = button_w * 2 + gap;
-        const base_x = modal.x + modal.w - total_w - scaled_padding;
-        const base_y = modal.y + modal.h - button_h - scaled_padding;
         return .{
-            .cancel = .{ .x = base_x, .y = base_y, .w = button_w, .h = button_h },
-            .quit = .{ .x = base_x + button_w + gap, .y = base_y, .w = button_w, .h = button_h },
+            .x = modal.x + modal.w - button_w - scaled_padding,
+            .y = modal.y + modal.h - button_h - scaled_padding,
+            .w = button_w,
+            .h = button_h,
         };
     }
 
@@ -281,7 +294,7 @@ pub const QuitConfirmComponent = struct {
         if (self.title_tex) |tex| c.SDL_DestroyTexture(tex);
         if (self.message_tex) |tex| c.SDL_DestroyTexture(tex);
 
-        const title_text = "Quit Architect?";
+        const title_text = "Closing Architect";
         const fg = theme.foreground;
         const title_color = c.SDL_Color{ .r = fg.r, .g = fg.g, .b = fg.b, .a = 255 };
         const title_surface = c.TTF_RenderText_Blended(title_font, title_text, title_text.len, title_color) orelse return error.SurfaceFailed;
@@ -310,11 +323,11 @@ pub const QuitConfirmComponent = struct {
         const process_plural = if (self.process_count == 1) "" else "es";
         return std.fmt.bufPrintZ(
             buffer,
-            "{d} terminal{s} {s} running process{s}. Quit anyway?",
+            "{d} terminal{s} {s} a running process{s}.",
             .{ self.process_count, plural, verb, process_plural },
         ) catch |err| blk: {
             log.warn("failed to format quit message: {}", .{err});
-            break :blk "Quit anyway?";
+            break :blk "Terminals are still running.";
         };
     }
 
@@ -336,5 +349,21 @@ pub const QuitConfirmComponent = struct {
         .update = update,
         .render = render,
         .deinit = deinitComp,
+        .wantsFrame = wantsFrame,
     };
 };
+
+test "borderFraction drains from full to empty" {
+    const C = QuitConfirmComponent;
+    const start: i64 = 1000;
+    const deadline = start + C.undo_window_ms;
+    // Just started -> full border.
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), C.borderFraction(start, deadline), 0.001);
+    // Halfway -> half border.
+    try std.testing.expectApproxEqAbs(@as(f32, 0.5), C.borderFraction(start + @divTrunc(C.undo_window_ms, 2), deadline), 0.001);
+    // At/after deadline -> empty.
+    try std.testing.expectEqual(@as(f32, 0.0), C.borderFraction(deadline, deadline));
+    try std.testing.expectEqual(@as(f32, 0.0), C.borderFraction(deadline + 5000, deadline));
+    // Before the window (clock skew) clamps to full.
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), C.borderFraction(0, C.undo_window_ms * 2), 0.001);
+}

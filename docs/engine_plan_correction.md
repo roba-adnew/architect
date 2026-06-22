@@ -117,7 +117,7 @@ The following components were added after the plan was written, following the es
 
 | Component | Purpose | Follows Pattern |
 |-----------|---------|-----------------|
-| `QuitConfirmComponent` | Quit confirmation dialog | ✅ |
+| `QuitConfirmComponent` | Quit undo-close countdown (timer + draining ring) | ✅ |
 | `WorktreeOverlayComponent` | Git worktree picker (⌘T) | ✅ |
 | `GlobalShortcutsComponent` | Global shortcuts (⌘,) | ✅ |
 | `PillGroupComponent` | Coordinates multiple pill overlays | ✅ |

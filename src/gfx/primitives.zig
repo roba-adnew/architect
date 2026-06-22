@@ -58,6 +58,86 @@ pub fn drawRoundedBorder(renderer: *c.SDL_Renderer, rect: Rect, radius: c_int) v
     }
 }
 
+/// Perimeter length of a rounded rect: the two horizontal + two vertical straight
+/// runs plus the four quarter-corners (= one full circle of the corner radius).
+pub fn roundedRectPerimeter(rect: Rect, radius: c_int) f32 {
+    if (rect.w <= 0 or rect.h <= 0) return 0;
+    const r: f32 = @floatFromInt(@min(radius, @divFloor(@min(rect.w, rect.h), 2)));
+    const w: f32 = @floatFromInt(rect.w);
+    const h: f32 = @floatFromInt(rect.h);
+    return 2.0 * (w - 2.0 * r) + 2.0 * (h - 2.0 * r) + 2.0 * std.math.pi * r;
+}
+
+/// Draws a segment toward (x1,y1), but only up to `remaining.*` length. Returns
+/// true if the whole segment was drawn (caller continues), false if it was
+/// clipped at the cap (caller stops). Consumes the drawn length from `remaining`.
+fn drawCappedSeg(renderer: *c.SDL_Renderer, x0: f32, y0: f32, x1: f32, y1: f32, remaining: *f32) bool {
+    const dx = x1 - x0;
+    const dy = y1 - y0;
+    const len = @sqrt(dx * dx + dy * dy);
+    if (len <= 0.0001) return true;
+    if (remaining.* >= len) {
+        _ = c.SDL_RenderLine(renderer, x0, y0, x1, y1);
+        remaining.* -= len;
+        return true;
+    }
+    const t = remaining.* / len;
+    _ = c.SDL_RenderLine(renderer, x0, y0, x0 + dx * t, y0 + dy * t);
+    remaining.* = 0;
+    return false;
+}
+
+/// Draws a corner arc (center cx,cy, radius r, from angle a0 to a1) as short
+/// segments, honoring the same length cap as drawCappedSeg.
+fn drawCappedArc(renderer: *c.SDL_Renderer, cx: f32, cy: f32, r: f32, a0: f32, a1: f32, remaining: *f32) bool {
+    if (r <= 0.0001) return true;
+    const sweep = a1 - a0;
+    const steps: usize = @max(2, @as(usize, @intFromFloat(@ceil(@abs(sweep) * r / 3.0))));
+    var prev_x = cx + r * @cos(a0);
+    var prev_y = cy + r * @sin(a0);
+    var i: usize = 1;
+    while (i <= steps) : (i += 1) {
+        const a = a0 + sweep * (@as(f32, @floatFromInt(i)) / @as(f32, @floatFromInt(steps)));
+        const nx = cx + r * @cos(a);
+        const ny = cy + r * @sin(a);
+        if (!drawCappedSeg(renderer, prev_x, prev_y, nx, ny, remaining)) return false;
+        prev_x = nx;
+        prev_y = ny;
+    }
+    return true;
+}
+
+/// Draws the first `frac` (0..1) of the rounded-rect perimeter, clockwise from
+/// top-center — a countdown "ring" that drains around the box as frac shrinks.
+/// Caller sets the draw color and blend mode first (like drawRoundedBorder).
+pub fn drawRoundedBorderArc(renderer: *c.SDL_Renderer, rect: Rect, radius: c_int, frac: f32) void {
+    if (rect.w <= 0 or rect.h <= 0) return;
+    const f = std.math.clamp(frac, 0.0, 1.0);
+    if (f <= 0.0) return;
+
+    const r: f32 = @floatFromInt(@min(radius, @divFloor(@min(rect.w, rect.h), 2)));
+    const x: f32 = @floatFromInt(rect.x);
+    const y: f32 = @floatFromInt(rect.y);
+    const w: f32 = @floatFromInt(rect.w);
+    const h: f32 = @floatFromInt(rect.h);
+    const cx = x + w / 2.0;
+    const half_pi = std.math.pi / 2.0;
+
+    var remaining = f * roundedRectPerimeter(rect, radius);
+
+    // Clockwise from top-center: right half of top edge, then each corner +
+    // edge, closing with the left half of the top edge.
+    if (!drawCappedSeg(renderer, cx, y, x + w - r, y, &remaining)) return;
+    if (!drawCappedArc(renderer, x + w - r, y + r, r, -half_pi, 0.0, &remaining)) return;
+    if (!drawCappedSeg(renderer, x + w, y + r, x + w, y + h - r, &remaining)) return;
+    if (!drawCappedArc(renderer, x + w - r, y + h - r, r, 0.0, half_pi, &remaining)) return;
+    if (!drawCappedSeg(renderer, x + w - r, y + h, x + r, y + h, &remaining)) return;
+    if (!drawCappedArc(renderer, x + r, y + h - r, r, half_pi, std.math.pi, &remaining)) return;
+    if (!drawCappedSeg(renderer, x, y + h - r, x, y + r, &remaining)) return;
+    if (!drawCappedArc(renderer, x + r, y + r, r, std.math.pi, std.math.pi + half_pi, &remaining)) return;
+    _ = drawCappedSeg(renderer, x + r, y, cx, y, &remaining);
+}
+
 /// Draw a filled border of the given thickness and corner radius by scanline-filling the
 /// donut region between the outer rounded rect and the inner rounded rect (inset by
 /// `thickness`). This produces smooth, uniformly-thick corners without concentric-arc
@@ -292,4 +372,28 @@ pub fn renderBezierArrow(
     };
     const indices = [3]c_int{ 0, 1, 2 };
     _ = c.SDL_RenderGeometry(renderer, null, &verts, 3, &indices, 3);
+}
+
+test "roundedRectPerimeter" {
+    // radius 0 -> plain rectangle perimeter.
+    try std.testing.expectApproxEqAbs(
+        @as(f32, 2.0 * (100.0 + 50.0)),
+        roundedRectPerimeter(.{ .x = 0, .y = 0, .w = 100, .h = 50 }, 0),
+        0.001,
+    );
+    // radius r -> straight runs shrink by 2r each, corners add one full circle.
+    const r: f32 = 10.0;
+    const expected = 2.0 * (100.0 - 2.0 * r) + 2.0 * (50.0 - 2.0 * r) + 2.0 * std.math.pi * r;
+    try std.testing.expectApproxEqAbs(
+        expected,
+        roundedRectPerimeter(.{ .x = 0, .y = 0, .w = 100, .h = 50 }, 10),
+        0.01,
+    );
+    // radius clamps to half the shorter side; a square's "rounded" perimeter
+    // with max radius is a circle: 2*pi*(side/2).
+    try std.testing.expectApproxEqAbs(
+        @as(f32, 2.0 * std.math.pi * 25.0),
+        roundedRectPerimeter(.{ .x = 0, .y = 0, .w = 50, .h = 50 }, 999),
+        0.01,
+    );
 }
