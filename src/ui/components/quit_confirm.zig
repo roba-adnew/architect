@@ -46,7 +46,7 @@ pub const QuitConfirmComponent = struct {
     const button_height: c_int = 40;
 
     /// How long the undo window stays open before the quit proceeds.
-    const undo_window_ms: i64 = 4000;
+    const undo_window_ms: i64 = 2000;
 
     pub fn init(allocator: std.mem.Allocator) !*QuitConfirmComponent {
         const self = try allocator.create(QuitConfirmComponent);
