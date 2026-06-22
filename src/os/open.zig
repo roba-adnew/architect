@@ -61,8 +61,30 @@ fn openThread(ctx: *ThreadContext) void {
     };
 }
 
+/// In E2E test mode (ARCHITECT_TEST_MODE + ARCHITECT_OPENED_URLS_FILE), append the
+/// opened target to that file (one per line) instead of launching a real opener,
+/// so tests can assert what was opened without spawning a browser. Returns true
+/// when handled; a complete no-op in production (env vars unset).
+fn recordOpenForTest(target: []const u8) bool {
+    if (std.posix.getenv("ARCHITECT_TEST_MODE") == null) return false;
+    const path = std.posix.getenv("ARCHITECT_OPENED_URLS_FILE") orelse return false;
+    appendLine(path, target) catch |err| {
+        log.warn("failed to record opened target for test: {}", .{err});
+    };
+    return true;
+}
+
+fn appendLine(path: []const u8, line: []const u8) !void {
+    const file = try std.fs.cwd().createFile(path, .{ .truncate = false });
+    defer file.close();
+    try file.seekFromEnd(0);
+    try file.writeAll(line);
+    try file.writeAll("\n");
+}
+
 /// Open a web URL (or any target) with the platform's default handler.
 pub fn openUrl(_: std.mem.Allocator, url: []const u8) OpenError!void {
+    if (recordOpenForTest(url)) return;
     const argv: []const []const u8 = switch (builtin.os.tag) {
         .linux, .freebsd => &.{ "xdg-open", url },
         .windows => &.{ "rundll32", "url.dll,FileProtocolHandler", url },
@@ -77,6 +99,7 @@ pub fn openUrl(_: std.mem.Allocator, url: []const u8) OpenError!void {
 /// user's browser). Web URLs and everything else fall back to the default
 /// handler. Other platforms always use the default handler.
 pub fn openTarget(allocator: std.mem.Allocator, target: []const u8) OpenError!void {
+    if (recordOpenForTest(target)) return;
     if (builtin.os.tag == .macos and target.len > 0 and target[0] == '/') {
         const ext = std.fs.path.extension(target);
         const is_html = std.ascii.eqlIgnoreCase(ext, ".html") or std.ascii.eqlIgnoreCase(ext, ".htm");

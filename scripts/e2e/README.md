@@ -37,18 +37,27 @@ from harness import Architect, CMD
 def test_cmd_esc_enters_grid():
     with Architect() as app:
         app.wait_for(lambda s: any(x["spawned"] for x in s["sessions"]), what="first pane")
-        app.key("n", CMD)                                            # Cmd+N: add a pane
-        app.wait_for(lambda s: sum(x["spawned"] for x in s["sessions"]) >= 2, what="2 panes")
-        app.key("esc", CMD)                                          # Cmd+Esc: collapse to grid
-        app.wait_for(lambda s: s["mode"] == "Grid", what="grid mode")
+        app.act_until(lambda: app.key("n", CMD),                       # Cmd+N: add a pane
+                      lambda s: sum(x["spawned"] for x in s["sessions"]) >= 2, what="2 panes")
+        app.act_until(lambda: app.key("esc", CMD),                     # Cmd+Esc: collapse to grid
+                      lambda s: s["mode"] == "Grid", what="grid mode")
 ```
 
-`Architect` gives you: `state()`, `wait_for(pred, timeout, what)`, `key(name, flags)`,
-`click(x, y)`, `scroll(dy)`, `grid_cell_center(slot)`, `window_rect()`. Add a test by
-writing a function and listing it in `TESTS` in `test_ui.py`.
+`Architect` gives you: `state()`, `opened_urls()`, `wait_for(pred, ...)`,
+`act_until(action, pred, ...)`, `key(name, flags)`, `type_text(s)`, `enter()`,
+`click(x, y)`, `cmd_click(x, y)`, `scroll(dy)`, `grid_cell_center(slot)`,
+`window_rect()`. Add a test by writing a function and listing it in `TESTS` in
+`test_ui.py`.
 
-`wait_for` polls the state file with a timeout, so tests assert on *settled* state
-rather than guessing at sleep durations.
+Prefer **`act_until`** for anything that changes state: it does the action, polls
+for the expected result, and re-sends it (re-focusing) if a keystroke or click was
+dropped — so real-OS-input races don't make the suite flaky. `wait_for` is for
+waiting on something with no action to repeat.
+
+Covered today: startup, add/remove terminals (Cmd+N / Cmd+W), grid↔full
+(Cmd+Esc / Cmd+Return), click-to-focus in grid, and Cmd+Click opening a link.
+Link opens are recorded to `ARCHITECT_OPENED_URLS_FILE` instead of launching a
+browser (`recordOpenForTest` in `src/os/open.zig`), readable via `opened_urls()`.
 
 ## Limitations / roadmap
 

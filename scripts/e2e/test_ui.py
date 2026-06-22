@@ -6,6 +6,7 @@ launches a real window and drives it with OS input, so it briefly takes focus.
 """
 
 import sys
+import time
 
 from harness import Architect, CMD
 
@@ -27,10 +28,8 @@ def test_cmd_esc_enters_grid():
     """Cmd+N adds a pane; Cmd+Esc collapses to grid view."""
     with Architect() as app:
         app.wait_for(lambda s: _spawned(s) >= 1, what="initial pane")
-        app.key("n", CMD)
-        app.wait_for(lambda s: _spawned(s) >= 2, what="second pane to spawn")
-        app.key("esc", CMD)
-        s = app.wait_for(lambda s: s["mode"] == "Grid", what="grid mode after Cmd+Esc")
+        app.act_until(lambda: app.key("n", CMD), lambda s: _spawned(s) >= 2, what="second pane")
+        s = app.act_until(lambda: app.key("esc", CMD), lambda s: s["mode"] == "Grid", what="grid mode")
         return f"panes={_spawned(s)} mode={s['mode']}"
 
 
@@ -38,31 +37,54 @@ def test_grid_click_moves_focus():
     """Single-clicking a grid pane moves keyboard focus to it (the bug we hit)."""
     with Architect() as app:
         app.wait_for(lambda s: _spawned(s) >= 1, what="initial pane")
-        app.key("n", CMD)
-        app.wait_for(lambda s: _spawned(s) >= 2, what="2 panes")
-        app.key("esc", CMD)
-        app.wait_for(lambda s: s["mode"] == "Grid", what="grid mode")
+        app.act_until(lambda: app.key("n", CMD), lambda s: _spawned(s) >= 2, what="2 panes")
+        app.act_until(lambda: app.key("esc", CMD), lambda s: s["mode"] == "Grid", what="grid mode")
 
-        cx, cy = app.grid_cell_center(1)
-        app.click(cx, cy)
-        app.wait_for(lambda s: s["focused_session"] == 1, what="click pane 1 -> focus pane 1")
+        # Grid opens focused on the new pane (1); click pane 0 then pane 1 so each
+        # click is a real focus move, not a no-op.
+        c0x, c0y = app.grid_cell_center(0)
+        app.act_until(lambda: app.click(c0x, c0y), lambda s: s["focused_session"] == 0, what="click -> focus pane 0")
+        c1x, c1y = app.grid_cell_center(1)
+        app.act_until(lambda: app.click(c1x, c1y), lambda s: s["focused_session"] == 1, what="click -> focus pane 1")
+        return "click moves grid focus (1 -> 0 -> 1)"
 
-        cx, cy = app.grid_cell_center(0)
-        app.click(cx, cy)
-        app.wait_for(lambda s: s["focused_session"] == 0, what="click pane 0 -> focus pane 0")
-        return "click moves grid focus (1 -> 0)"
+
+def test_cmd_w_removes_terminal():
+    """Cmd+W closes a terminal; the spawned count drops and the grid compacts."""
+    with Architect() as app:
+        app.wait_for(lambda s: _spawned(s) >= 1, what="first pane")
+        app.act_until(lambda: app.key("n", CMD), lambda s: _spawned(s) >= 2, what="second pane")
+        s = app.act_until(lambda: app.key("w", CMD), lambda s: _spawned(s) == 1, what="one pane after Cmd+W")
+        return f"panes={_spawned(s)} grid={s['grid_cols']}x{s['grid_rows']}"
+
+
+def test_cmd_click_opens_link():
+    """Cmd+Click on a URL in terminal output opens that URL (recorded in test mode)."""
+    url = "https://example.com"
+    with Architect() as app:
+        app.wait_for(lambda s: _spawned(s) >= 1, what="terminal")
+        # Fill the screen with the URL at column 0 so a click near the left edge
+        # lands on it regardless of terminal width.
+        app.type_text(f"yes {url} | head -120")
+        app.enter()
+        time.sleep(1.0)  # let the output render
+        x, y, w, h = app.window_rect()
+        app.act_until(
+            lambda: app.cmd_click(x + w * 0.02, y + h * 0.5),
+            lambda s: url in app.opened_urls(),
+            timeout=8,
+            what=f"{url} to be opened",
+        )
+        return f"opened {app.opened_urls()[-1]}"
 
 
 def test_cmd_return_expands_to_full():
     """From grid, Cmd+Return expands the focused pane back to full view."""
     with Architect() as app:
         app.wait_for(lambda s: _spawned(s) >= 1, what="initial pane")
-        app.key("n", CMD)
-        app.wait_for(lambda s: _spawned(s) >= 2, what="2 panes")
-        app.key("esc", CMD)
-        app.wait_for(lambda s: s["mode"] == "Grid", what="grid mode")
-        app.key("return", CMD)
-        s = app.wait_for(lambda s: s["mode"] == "Full", what="full mode after Cmd+Return")
+        app.act_until(lambda: app.key("n", CMD), lambda s: _spawned(s) >= 2, what="2 panes")
+        app.act_until(lambda: app.key("esc", CMD), lambda s: s["mode"] == "Grid", what="grid mode")
+        s = app.act_until(lambda: app.key("return", CMD), lambda s: s["mode"] == "Full", what="full mode")
         return f"mode={s['mode']}"
 
 
@@ -71,6 +93,8 @@ TESTS = [
     test_cmd_esc_enters_grid,
     test_grid_click_moves_focus,
     test_cmd_return_expands_to_full,
+    test_cmd_w_removes_terminal,
+    test_cmd_click_opens_link,
 ]
 
 

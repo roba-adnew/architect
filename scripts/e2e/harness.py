@@ -72,6 +72,8 @@ class Architect:
         env["ARCHITECT_TEST_MODE"] = "1"
         env["ARCHITECT_STATE_FILE"] = self.state_file
         env["ARCHITECT_CONFIG_DIR"] = cfg
+        self.opened_file = os.path.join(self.dir, "opened.txt")
+        env["ARCHITECT_OPENED_URLS_FILE"] = self.opened_file
         if persist:
             env["ARCHITECT_PERSIST_SESSIONS"] = "1"
         else:
@@ -104,6 +106,31 @@ class Architect:
             time.sleep(0.04)
         raise AssertionError(f"timed out after {timeout}s waiting for {what}; last state = {last}")
 
+    def act_until(self, action, pred, timeout=8.0, what="", refocus=True):
+        """Do `action`, then poll for `pred(state)`; if it doesn't take within a
+        short window, re-focus and do it again. Rides out input/focus races so a
+        dropped keystroke or click doesn't fail the test. Returns the state."""
+        deadline = time.time() + timeout
+        first = True
+        while time.time() < deadline:
+            if not first and refocus:
+                self.focus()
+            first = False
+            action()
+            sub = time.time() + 1.5
+            while time.time() < sub:
+                if self.proc.poll() is not None:
+                    raise AssertionError(f"app exited while waiting for {what}")
+                s = self.state()
+                if s is not None:
+                    try:
+                        if pred(s):
+                            return s
+                    except Exception:
+                        pass
+                time.sleep(0.04)
+        raise AssertionError(f"timed out after {timeout}s for {what}; last state = {self.state()}")
+
     # --- input ---
     def focus(self):
         subprocess.run(
@@ -135,14 +162,48 @@ class Architect:
         )
         time.sleep(0.06)
 
-    def click(self, x, y):
+    def type_text(self, text):
+        esc = text.replace("\\", "\\\\").replace('"', '\\"')
+        subprocess.run(
+            ["osascript", "-e", f'tell application "System Events" to keystroke "{esc}"'],
+            stderr=subprocess.DEVNULL,
+        )
+        time.sleep(0.1)
+
+    def enter(self):
+        self.key("return")
+
+    def _mouse_at(self, x, y, flags=0):
         pt = _CGPoint(float(x), float(y))
-        _post(_cg.CGEventCreateMouseEvent(None, 5, pt, 0))  # mouse moved
-        time.sleep(0.05)
-        _post(_cg.CGEventCreateMouseEvent(None, 1, pt, 0))  # left down
+        for kind, pause in ((5, 0.05), (1, 0.06), (2, 0.05)):  # moved, left-down, left-up
+            ev = _cg.CGEventCreateMouseEvent(None, kind, pt, 0)
+            if flags:
+                _cg.CGEventSetFlags(ev, flags)
+            _post(ev)
+            time.sleep(pause)
+
+    def click(self, x, y):
+        self._mouse_at(x, y)
+
+    def cmd_click(self, x, y):
+        # Physically hold Cmd (keycode 55) AND set the Cmd flag on the mouse events,
+        # so the app reliably sees a Cmd+Click regardless of how it reads modifiers.
+        kd = _cg.CGEventCreateKeyboardEvent(None, 55, True)
+        _cg.CGEventSetFlags(kd, CMD)
+        _post(kd)
+        time.sleep(0.08)
+        self._mouse_at(x, y, CMD)
+        ku = _cg.CGEventCreateKeyboardEvent(None, 55, False)
+        _post(ku)
         time.sleep(0.06)
-        _post(_cg.CGEventCreateMouseEvent(None, 2, pt, 0))  # left up
-        time.sleep(0.05)
+
+    def opened_urls(self):
+        """List of targets the app 'opened' (recorded in test mode), in order."""
+        try:
+            with open(self.opened_file) as f:
+                return [ln.strip() for ln in f if ln.strip()]
+        except FileNotFoundError:
+            return []
 
     def scroll(self, dy):
         _post(_cg.CGEventCreateScrollWheelEvent(None, 1, 1, int(dy)))  # 1=line unit, 1 axis
