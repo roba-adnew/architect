@@ -147,6 +147,43 @@ pub const HiddenSwitcherComponent = struct {
         return n;
     }
 
+    /// Modal geometry, shared by render() and mouse hit-testing so clicks land on
+    /// exactly what's drawn. `n` is the filtered row count.
+    const Layout = struct { modal: geom.Rect, pad: c_int, gap: c_int, title_h: c_int, search_h: c_int, row_h: c_int, radius: c_int, rows_y0: c_int };
+
+    fn computeLayout(host: *const types.UiHost, n: usize) Layout {
+        const s = host.ui_scale;
+        const pad = dpi.scale(16, s);
+        const row_h = dpi.scale(34, s);
+        const title_h = dpi.scale(26, s);
+        const search_h = dpi.scale(30, s);
+        const gap = dpi.scale(8, s);
+        const display_rows: c_int = @max(1, @as(c_int, @intCast(n))); // 1 row reserved for "no matches"
+        const modal_w = @min(dpi.scale(460, s), host.window_w - dpi.scale(80, s));
+        const modal_h = pad + title_h + gap + search_h + gap + display_rows * row_h + pad;
+        const modal_x = @divFloor(host.window_w - modal_w, 2);
+        const modal_y = @divFloor(host.window_h - modal_h, 3); // upper third reads better than dead-center
+        return .{
+            .modal = .{ .x = modal_x, .y = modal_y, .w = modal_w, .h = modal_h },
+            .pad = pad,
+            .gap = gap,
+            .title_h = title_h,
+            .search_h = search_h,
+            .row_h = row_h,
+            .radius = dpi.scale(10, s),
+            .rows_y0 = modal_y + pad + title_h + gap + search_h + gap,
+        };
+    }
+
+    /// Which filtered row (0..n) is under (x, y), or null if not over a row.
+    fn rowAt(host: *const types.UiHost, n: usize, x: c_int, y: c_int) ?usize {
+        if (n == 0) return null;
+        const l = computeLayout(host, n);
+        if (x < l.modal.x or x > l.modal.x + l.modal.w or y < l.rows_y0) return null;
+        const row: usize = @intCast(@divFloor(y - l.rows_y0, l.row_h));
+        return if (row < n) row else null;
+    }
+
     fn handleEvent(ptr: *anyopaque, host: *const types.UiHost, event: *const c.SDL_Event, out: *types.UiActionQueue) bool {
         const self: *HiddenSwitcherComponent = @ptrCast(@alignCast(ptr));
 
@@ -157,6 +194,40 @@ pub const HiddenSwitcherComponent = struct {
             self.appendQuery(std.mem.span(event.text.text));
             return true;
         }
+
+        // While open, the modal owns the mouse: hovering a row selects it, clicking
+        // reveals it, clicking outside dismisses, and everything is swallowed so no
+        // click/scroll leaks to the grid behind the dim.
+        switch (event.type) {
+            c.SDL_EVENT_MOUSE_MOTION => {
+                if (!self.open) return false;
+                var buf: [max_entries]usize = undefined;
+                const n = collectHidden(host.sessions, self.query(), &buf);
+                if (rowAt(host, n, @intFromFloat(event.motion.x), @intFromFloat(event.motion.y))) |row| {
+                    self.selected = row;
+                }
+                return true;
+            },
+            c.SDL_EVENT_MOUSE_BUTTON_DOWN => {
+                if (!self.open) return false;
+                const mx: c_int = @intFromFloat(event.button.x);
+                const my: c_int = @intFromFloat(event.button.y);
+                var buf: [max_entries]usize = undefined;
+                const n = collectHidden(host.sessions, self.query(), &buf);
+                if (rowAt(host, n, mx, my)) |row| {
+                    out.append(.{ .RevealHiddenTerminal = buf[row] }) catch |err| {
+                        log.warn("failed to queue reveal action: {}", .{err});
+                    };
+                    self.close();
+                } else if (!geom.containsPoint(computeLayout(host, n).modal, mx, my)) {
+                    self.close(); // click on the dim backdrop dismisses
+                }
+                return true;
+            },
+            c.SDL_EVENT_MOUSE_BUTTON_UP, c.SDL_EVENT_MOUSE_WHEEL => return self.open,
+            else => {},
+        }
+
         if (event.type != c.SDL_EVENT_KEY_DOWN) return false;
 
         const key = event.key.key;
@@ -253,19 +324,18 @@ pub const HiddenSwitcherComponent = struct {
         const theme = host.theme;
         const ui_scale = host.ui_scale;
 
-        const pad = dpi.scale(16, ui_scale);
-        const row_h = dpi.scale(34, ui_scale);
-        const title_h = dpi.scale(26, ui_scale);
-        const search_h = dpi.scale(30, ui_scale);
-        const gap = dpi.scale(8, ui_scale);
-        const radius = dpi.scale(10, ui_scale);
-
-        const max_w = dpi.scale(460, ui_scale);
-        const modal_w = @min(max_w, host.window_w - dpi.scale(80, ui_scale));
-        const display_rows: c_int = @max(1, @as(c_int, @intCast(n))); // 1 row reserved for "no matches"
-        const modal_h = pad + title_h + gap + search_h + gap + display_rows * row_h + pad;
-        const modal_x = @divFloor(host.window_w - modal_w, 2);
-        const modal_y = @divFloor(host.window_h - modal_h, 3); // upper third reads better than dead-center
+        const l = computeLayout(host, n);
+        const modal = l.modal;
+        const modal_x = modal.x;
+        const modal_y = modal.y;
+        const modal_w = modal.w;
+        const pad = l.pad;
+        const gap = l.gap;
+        const title_h = l.title_h;
+        const search_h = l.search_h;
+        const row_h = l.row_h;
+        const radius = l.radius;
+        const rows_y0 = l.rows_y0;
 
         // Dim the scene behind the modal.
         _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
@@ -277,7 +347,6 @@ pub const HiddenSwitcherComponent = struct {
             .h = @floatFromInt(host.window_h),
         });
 
-        const modal = geom.Rect{ .x = modal_x, .y = modal_y, .w = modal_w, .h = modal_h };
         _ = c.SDL_SetRenderDrawColor(renderer, theme.selection.r, theme.selection.g, theme.selection.b, 245);
         primitives.fillRoundedRect(renderer, modal, radius);
         _ = c.SDL_SetRenderDrawColor(renderer, theme.accent.r, theme.accent.g, theme.accent.b, 230);
@@ -310,7 +379,6 @@ pub const HiddenSwitcherComponent = struct {
         ) catch |err| log.warn("failed to render search bar: {}", .{err});
 
         const row_fonts = font_cache.get(dpi.scale(16, ui_scale)) catch return;
-        const rows_y0 = modal_y + pad + title_h + gap + search_h + gap;
 
         if (n == 0) {
             drawText(self.allocator, renderer, row_fonts.regular, "No matches", theme.foreground, modal_x + pad + gap, rows_y0 + @divFloor(row_h, 2));
