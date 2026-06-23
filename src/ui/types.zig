@@ -14,6 +14,9 @@ pub const SessionUiInfo = struct {
     cwd_path: ?[]const u8 = null,
     cwd_basename: ?[]const u8 = null,
     session_status: app_state.SessionStatus = .idle,
+    /// Terminal title set by the program (OSC 0/2) — e.g. the name from Claude
+    /// Code's /rename — or null if unset. Borrows the session-owned string.
+    agent_name: ?[]const u8 = null,
 };
 
 pub const UiHost = struct {

@@ -21,6 +21,8 @@ const shortcuts = [_]Shortcut{
     .{ .key = "⌘O", .desc = "Open recent folders" },
     .{ .key = "⌘?", .desc = "Open help" },
     .{ .key = "⌘N", .desc = "Spawn new terminal" },
+    .{ .key = "⌘J", .desc = "Hide terminal from grid" },
+    .{ .key = "⌘⇧J", .desc = "Hidden-terminals picker" },
     .{ .key = "⌘+ / ⌘-", .desc = "Zoom (grid or focus view)" },
     .{ .key = "⌘D", .desc = "Show git diff" },
     .{ .key = "⌘R", .desc = "Open reader mode" },

@@ -10,6 +10,7 @@ const colors_mod = @import("../colors.zig");
 const fs = std.fs;
 const cwd_mod = if (builtin.os.tag == .macos) @import("../cwd.zig") else struct {};
 const vt_stream = @import("../vt_stream.zig");
+const osc_title = @import("osc_title.zig");
 const mac = if (builtin.os.tag == .macos)
     @cImport({
         @cInclude("sys/types.h");
@@ -115,6 +116,10 @@ pub const SessionState = struct {
     /// Updated continuously by processOutput; used as a reliable fallback for agent detection
     /// when KERN_PROCARGS2 is restricted by the OS (macOS Sequoia and later).
     agent_icon: ?AgentKind = null,
+    /// Claude Code session name parsed from the terminal title (the status glyph
+    /// stripped) — e.g. the name from `/rename`, or the auto-generated summary.
+    /// Null until a Claude title is seen. Owned; freed in teardown.
+    title: ?[]const u8 = null,
     /// Agent type detected at quit time (macOS only). Set transiently before persistence save.
     agent_kind: ?AgentKind = null,
     /// Agent session UUID extracted from terminal output at quit time. Owned; freed in deinit.
@@ -318,6 +323,10 @@ pub const SessionState = struct {
             allocator.free(sid);
             self.agent_session_id = null;
         }
+        if (self.title) |t| {
+            allocator.free(t);
+            self.title = null;
+        }
         self.agent_kind = null;
         self.agent_metadata_captured = false;
 
@@ -491,6 +500,10 @@ pub const SessionState = struct {
             self.allocator.free(sid);
             self.agent_session_id = null;
         }
+        if (self.title) |t| {
+            self.allocator.free(t);
+            self.title = null;
+        }
         self.agent_kind = null;
         self.agent_metadata_captured = false;
 
@@ -603,6 +616,11 @@ pub const SessionState = struct {
 
             if (scanOsc1Agent(self.output_buf[0..n])) |kind| {
                 self.agent_icon = kind;
+            }
+            if (osc_title.scanOscTitle(self.output_buf[0..n])) |t| {
+                self.setTitle(t) catch |err| {
+                    log.warn("session {d}: failed to store terminal title: {}", .{ self.id, err });
+                };
             }
             if (self.quit_capture_active) {
                 self.quit_capture.appendSlice(self.allocator, self.output_buf[0..n]) catch |err| {
@@ -848,6 +866,19 @@ pub const SessionState = struct {
 
         log.debug("detectForegroundAgent: fg_pgrp={d} result=null", .{fg_pgrp});
         return null;
+    }
+
+    /// Store the Claude Code session name parsed from terminal title `t`. Non-Claude
+    /// titles (shell/git prompt strings) are ignored, so the last captured name
+    /// sticks even while the shell repaints its own title between agent turns.
+    fn setTitle(self: *SessionState, t: []const u8) !void {
+        const name = osc_title.claudeSessionName(t) orelse return;
+        if (self.title) |old| {
+            if (std.mem.eql(u8, old, name)) return; // unchanged; avoid churn
+        }
+        const dup = try self.allocator.dupe(u8, name);
+        if (self.title) |old| self.allocator.free(old);
+        self.title = dup;
     }
 };
 
