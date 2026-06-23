@@ -294,6 +294,7 @@ fn terminalEntriesMatchSessions(
         const agent_session_id = persistedAgentSessionId(session, agent_type);
 
         if (!std.mem.eql(u8, entry.path, path)) return false;
+        if (entry.hidden != session.hidden) return false;
         if (!optionalStringEql(entry.agent_type, agent_type)) return false;
         if (!optionalStringEql(entry.agent_session_id, agent_session_id)) return false;
 
@@ -317,7 +318,7 @@ fn syncPersistenceTerminalEntriesFromSessions(
 
         const agent_type = persistedAgentType(session);
         const agent_session_id = persistedAgentSessionId(session, agent_type);
-        try persistence.appendTerminalEntry(allocator, path, agent_type, agent_session_id);
+        try persistence.appendTerminalEntry(allocator, path, agent_type, agent_session_id, session.hidden);
     }
     return true;
 }
@@ -1550,8 +1551,18 @@ pub fn run() !void {
     const restored_limit = @min(restored_entries.len, grid_layout.max_terminals);
     const restored_slice = restored_entries[0..restored_limit];
 
-    // Calculate initial grid size based on restored terminals
-    const initial_terminal_count: usize = if (restored_slice.len > 0) restored_slice.len else 1;
+    // Calculate initial grid size from the VISIBLE restored terminals only —
+    // hidden ones are spawned (below) but don't reserve a grid tile. Entries are
+    // saved already compacted (visible first, hidden last), so the visible ones
+    // land at the front slots and the grid sizes to them.
+    const initial_visible_count: usize = blk: {
+        var v: usize = 0;
+        for (restored_slice) |entry| {
+            if (!entry.hidden) v += 1;
+        }
+        break :blk v;
+    };
+    const initial_terminal_count: usize = if (initial_visible_count > 0) initial_visible_count else 1;
     const initial_dims = GridLayout.calculateDimensions(initial_terminal_count);
     grid.cols = initial_dims.cols;
     grid.rows = initial_dims.rows;
@@ -1766,6 +1777,8 @@ pub fn run() !void {
             };
             if (sessions[new_idx].spawned) {
                 seedSessionAgentMetadataFromEntry(sessions[new_idx], entry, allocator);
+                // Restore as hidden: alive but out of the grid until revealed.
+                sessions[new_idx].hidden = entry.hidden;
             }
         }
     }
@@ -3966,7 +3979,7 @@ test "syncPersistenceTerminalEntriesFromSessions ignores restored agent metadata
     var persistence = config_mod.Persistence.init(allocator);
     defer persistence.deinit(allocator);
 
-    try persistence.appendTerminalEntry(allocator, "/one", "codex", "stale-seed");
+    try persistence.appendTerminalEntry(allocator, "/one", "codex", "stale-seed", false);
 
     var session: SessionState = undefined;
     session.slot_index = 0;

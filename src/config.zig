@@ -341,6 +341,8 @@ pub const Persistence = struct {
         path: []const u8,
         agent_type: ?[]const u8 = null,
         agent_session_id: ?[]const u8 = null,
+        /// Restored as spawned-but-hidden (pulled out of the grid via Cmd+J).
+        hidden: bool = false,
     };
 
     window: WindowConfig = .{},
@@ -370,6 +372,7 @@ pub const Persistence = struct {
         terminals: ?[]const []const u8 = null,
         terminal_agent_types: ?[]const []const u8 = null,
         terminal_session_ids: ?[]const []const u8 = null,
+        terminal_hidden: ?[]const bool = null,
         recent_folders: ?toml.HashMap(u32) = null,
         focused_session: usize = 0,
         zoomed: bool = false,
@@ -443,7 +446,11 @@ pub const Persistence = struct {
                         if (idx < ids.len and ids[idx].len > 0) ids[idx] else null
                     else
                         null;
-                    try persistence.appendTerminalEntry(allocator, path, agent_type, agent_session_id);
+                    const hidden = if (result.value.terminal_hidden) |flags|
+                        idx < flags.len and flags[idx]
+                    else
+                        false;
+                    try persistence.appendTerminalEntry(allocator, path, agent_type, agent_session_id, hidden);
                 }
             }
 
@@ -469,7 +476,7 @@ pub const Persistence = struct {
 
             if (result.value.terminals) |paths| {
                 for (paths) |path| {
-                    try persistence.appendTerminalEntry(allocator, path, null, null);
+                    try persistence.appendTerminalEntry(allocator, path, null, null, false);
                 }
             }
 
@@ -561,6 +568,20 @@ pub const Persistence = struct {
                 }
                 try writer.writeAll("]\n");
             }
+
+            // Only emit terminal_hidden when something is hidden, so the common
+            // case keeps a clean file; absent => all visible on load.
+            const has_hidden = for (self.terminal_entries.items) |entry| {
+                if (entry.hidden) break true;
+            } else false;
+            if (has_hidden) {
+                try writer.writeAll("terminal_hidden = [");
+                for (self.terminal_entries.items, 0..) |entry, idx| {
+                    if (idx != 0) try writer.writeAll(", ");
+                    try writer.writeAll(if (entry.hidden) "true" else "false");
+                }
+                try writer.writeAll("]\n");
+            }
         }
 
         // Write [window] section
@@ -606,6 +627,7 @@ pub const Persistence = struct {
         path: []const u8,
         agent_type: ?[]const u8,
         agent_session_id: ?[]const u8,
+        hidden: bool,
     ) !void {
         const path_copy = try allocator.dupe(u8, path);
         errdefer allocator.free(path_copy);
@@ -626,6 +648,7 @@ pub const Persistence = struct {
             .path = path_copy,
             .agent_type = agent_type_copy,
             .agent_session_id = agent_session_id_copy,
+            .hidden = hidden,
         });
     }
 
@@ -819,7 +842,7 @@ pub const Persistence = struct {
         std.mem.sort(LegacyTerminalEntry, entries.items, {}, LegacyTerminalEntry.lessThan);
 
         for (entries.items) |entry| {
-            try self.appendTerminalEntry(allocator, entry.path, null, null);
+            try self.appendTerminalEntry(allocator, entry.path, null, null, false);
         }
     }
 
@@ -1316,8 +1339,8 @@ test "Persistence.appendTerminalEntry preserves order and fields" {
     var persistence = Persistence.init(allocator);
     defer persistence.deinit(allocator);
 
-    try persistence.appendTerminalEntry(allocator, "/one", null, null);
-    try persistence.appendTerminalEntry(allocator, "/two", "claude", "abc-123");
+    try persistence.appendTerminalEntry(allocator, "/one", null, null, false);
+    try persistence.appendTerminalEntry(allocator, "/two", "claude", "abc-123", false);
 
     try std.testing.expectEqual(@as(usize, 2), persistence.terminal_entries.items.len);
     try std.testing.expectEqualStrings("/one", persistence.terminal_entries.items[0].path);
@@ -1364,7 +1387,7 @@ test "Persistence.appendLegacyTerminalEntries migrates row-major order" {
 test "Persistence save/load round-trip preserves all fields" {
     const allocator = std.testing.allocator;
 
-    const tmp_dir = std.testing.tmpDir(.{});
+    var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
     const tmp_path = try tmp_dir.dir.realpathAlloc(allocator, ".");
@@ -1382,9 +1405,9 @@ test "Persistence save/load round-trip preserves all fields" {
     original.window.y = 200;
     original.font_size = 16;
     original.grid_font_scale = 1.5;
-    try original.appendTerminalEntry(allocator, "/home/user/project1", null, null);
-    try original.appendTerminalEntry(allocator, "/home/user/project2", "claude", "abc-123-def");
-    try original.appendTerminalEntry(allocator, "/tmp/test", null, null);
+    try original.appendTerminalEntry(allocator, "/home/user/project1", null, null, false);
+    try original.appendTerminalEntry(allocator, "/home/user/project2", "claude", "abc-123-def", true);
+    try original.appendTerminalEntry(allocator, "/tmp/test", null, null, false);
 
     try original.saveToPath(allocator, test_file);
 
@@ -1416,7 +1439,11 @@ test "Persistence save/load round-trip preserves all fields" {
                 if (idx < ids.len and ids[idx].len > 0) ids[idx] else null
             else
                 null;
-            try loaded.appendTerminalEntry(allocator, path, agent_type, agent_session_id);
+            const hidden = if (result.value.terminal_hidden) |flags|
+                idx < flags.len and flags[idx]
+            else
+                false;
+            try loaded.appendTerminalEntry(allocator, path, agent_type, agent_session_id, hidden);
         }
     }
 
@@ -1440,6 +1467,7 @@ test "Persistence save/load round-trip preserves all fields" {
         } else {
             try std.testing.expect(loaded_entry.agent_session_id == null);
         }
+        try std.testing.expectEqual(orig.hidden, loaded_entry.hidden);
     }
 }
 
@@ -1497,7 +1525,7 @@ test "writeFileAtomicallyAbsolute replaces file with valid TOML" {
 
 test "Persistence grid font presets save/load round-trip" {
     const allocator = std.testing.allocator;
-    const tmp_dir = std.testing.tmpDir(.{});
+    var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
     const tmp_path = try tmp_dir.dir.realpathAlloc(allocator, ".");
     defer allocator.free(tmp_path);
