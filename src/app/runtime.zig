@@ -107,6 +107,16 @@ fn countSpawnedSessions(sessions: []const *SessionState) usize {
     return count;
 }
 
+/// Sessions shown in the grid: spawned and not hidden. Drives grid sizing/layout
+/// so hidden sessions don't reserve a tile.
+fn countVisibleSessions(sessions: []const *SessionState) usize {
+    var count: usize = 0;
+    for (sessions) |session| {
+        if (session.isVisible()) count += 1;
+    }
+    return count;
+}
+
 fn remainingFrameBudgetNs(target_frame_ns: i128, frame_ns: i128) u64 {
     if (frame_ns >= target_frame_ns) return 0;
     return @intCast(target_frame_ns - frame_ns);
@@ -325,11 +335,11 @@ fn savePersistenceIfDirty(
     dirty.* = false;
 }
 
-fn highestSpawnedIndex(sessions: []const *SessionState) ?usize {
+fn highestVisibleIndex(sessions: []const *SessionState) ?usize {
     var idx: usize = sessions.len;
     while (idx > 0) {
         idx -= 1;
-        if (sessions[idx].spawned) return idx;
+        if (sessions[idx].isVisible()) return idx;
     }
     return null;
 }
@@ -515,11 +525,11 @@ fn compactSessions(
     render_cache: *renderer_mod.RenderCache,
     anim_state: *AnimationState,
 ) void {
-    const focused_id: ?usize = if (anim_state.focused_session < sessions.len and sessions[anim_state.focused_session].spawned)
+    const focused_id: ?usize = if (anim_state.focused_session < sessions.len and sessions[anim_state.focused_session].isVisible())
         sessions[anim_state.focused_session].id
     else
         null;
-    const previous_id: ?usize = if (anim_state.previous_session < sessions.len and sessions[anim_state.previous_session].spawned)
+    const previous_id: ?usize = if (anim_state.previous_session < sessions.len and sessions[anim_state.previous_session].isVisible())
         sessions[anim_state.previous_session].id
     else
         null;
@@ -527,7 +537,7 @@ fn compactSessions(
     var write_idx: usize = 0;
     var idx: usize = 0;
     while (idx < sessions.len) : (idx += 1) {
-        if (!sessions[idx].spawned) continue;
+        if (!sessions[idx].isVisible()) continue;
         if (write_idx != idx) {
             std.mem.swap(*SessionState, &sessions[write_idx], &sessions[idx]);
             std.mem.swap(SessionViewState, &views[write_idx], &views[idx]);
@@ -782,6 +792,9 @@ fn handleExternalSpawnRequest(
 /// signal-killing the child, which would leave a dead, unresponsive pane).
 fn despawnSessionAtIndex(
     idx: usize,
+    /// When true, keep the session alive and just hide it from the grid (Cmd+H)
+    /// instead of tearing it down. The grid reflow is identical either way.
+    hide: bool,
     allocator: std.mem.Allocator,
     sessions: []*SessionState,
     grid: *GridLayout,
@@ -825,14 +838,20 @@ fn despawnSessionAtIndex(
             break :blk null;
         };
     }
-    sessions[idx].despawn(allocator);
-    session_interaction_component.resetView(idx);
+    if (hide) {
+        // Keep the session (shell/PTY/agent) alive; just drop it from the grid,
+        // preserving its view state so it returns exactly as it was.
+        sessions[idx].hidden = true;
+    } else {
+        sessions[idx].despawn(allocator);
+        session_interaction_component.resetView(idx);
+    }
     sessions[idx].markDirty();
     compactSessions(sessions, session_interaction_component.viewSlice(), render_cache, anim_state);
 
-    // Handle grid contraction
-    const remaining_count = countSpawnedSessions(sessions);
-    const max_spawned_idx = highestSpawnedIndex(sessions);
+    // Handle grid contraction (hidden sessions don't count toward grid size).
+    const remaining_count = countVisibleSessions(sessions);
+    const max_spawned_idx = highestVisibleIndex(sessions);
     const required_slots = if (max_spawned_idx) |max_idx| max_idx + 1 else 0;
 
     if (remaining_count == 0) {
@@ -853,9 +872,9 @@ fn despawnSessionAtIndex(
         grid.rows = 1;
         cell_width_pixels.* = render_width;
         cell_height_pixels.* = render_height;
-        if (!sessions[anim_state.focused_session].spawned) {
+        if (!sessions[anim_state.focused_session].isVisible()) {
             for (sessions, 0..) |s, i| {
-                if (s.spawned) {
+                if (s.isVisible()) {
                     anim_state.focused_session = i;
                     break;
                 }
@@ -903,10 +922,10 @@ fn despawnSessionAtIndex(
             cell_height_pixels.* = @divFloor(render_height, @as(c_int, @intCast(grid.rows)));
             applyTerminalLayout(sessions, allocator, font, render_width, render_height, ui_scale, anim_state, grid.cols, grid.rows, grid_font_scale, full_cols, full_rows);
 
-            if (!sessions[anim_state.focused_session].spawned) {
+            if (!sessions[anim_state.focused_session].isVisible()) {
                 var new_focus: usize = 0;
                 for (sessions, 0..) |s, i| {
-                    if (s.spawned) {
+                    if (s.isVisible()) {
                         new_focus = i;
                         break;
                     }
@@ -933,10 +952,10 @@ fn despawnSessionAtIndex(
                     }
                 }
             }
-            if (!sessions[anim_state.focused_session].spawned) {
+            if (!sessions[anim_state.focused_session].isVisible()) {
                 var new_focus: usize = 0;
                 for (sessions, 0..) |s, i| {
-                    if (s.spawned) {
+                    if (s.isVisible()) {
                         new_focus = i;
                         break;
                     }
@@ -991,6 +1010,7 @@ fn handleExternalCloseRequest(
     const session_id = sessions[idx].id;
     despawnSessionAtIndex(
         idx,
+        false,
         allocator,
         sessions,
         grid,
@@ -2218,8 +2238,8 @@ pub fn run() !void {
                             compactSessions(sessions, session_interaction_component.viewSlice(), &render_cache, &anim_state);
 
                             // Count remaining spawned sessions after closing
-                            const remaining_count = countSpawnedSessions(sessions);
-                            const max_spawned_idx = highestSpawnedIndex(sessions);
+                            const remaining_count = countVisibleSessions(sessions);
+                            const max_spawned_idx = highestVisibleIndex(sessions);
                             const required_slots = if (max_spawned_idx) |max_idx| max_idx + 1 else 0;
 
                             // Don't shrink below 1 terminal
@@ -2239,9 +2259,9 @@ pub fn run() !void {
                                 grid.rows = 1;
                                 cell_width_pixels = render_width;
                                 cell_height_pixels = render_height;
-                                if (!sessions[anim_state.focused_session].spawned) {
+                                if (!sessions[anim_state.focused_session].isVisible()) {
                                     for (sessions, 0..) |s, idx| {
-                                        if (s.spawned) {
+                                        if (s.isVisible()) {
                                             anim_state.focused_session = idx;
                                             break;
                                         }
@@ -2291,10 +2311,10 @@ pub fn run() !void {
                                     applyTerminalLayout(sessions, allocator, &font, render_width, render_height, ui_scale, &anim_state, grid.cols, grid.rows, config.grid.font_scale, &full_cols, &full_rows);
 
                                     // Update focus to a valid session
-                                    if (!sessions[anim_state.focused_session].spawned) {
+                                    if (!sessions[anim_state.focused_session].isVisible()) {
                                         var new_focus: usize = 0;
                                         for (sessions, 0..) |s, idx| {
-                                            if (s.spawned) {
+                                            if (s.isVisible()) {
                                                 new_focus = idx;
                                                 break;
                                             }
@@ -2323,11 +2343,11 @@ pub fn run() !void {
                                         }
                                     }
                                     // Grid doesn't need to shrink, just update focus if needed
-                                    if (!sessions[anim_state.focused_session].spawned) {
+                                    if (!sessions[anim_state.focused_session].isVisible()) {
                                         // Find the next spawned session
                                         var new_focus: usize = 0;
                                         for (sessions, 0..) |s, idx| {
-                                            if (s.spawned) {
+                                            if (s.isVisible()) {
                                                 new_focus = idx;
                                                 break;
                                             }
@@ -2336,6 +2356,78 @@ pub fn run() !void {
                                     }
                                 }
                             }
+                        }
+                        continue;
+                    }
+
+                    // Cmd+J hides the focused terminal (keeps it alive, drops it
+                    // from the grid); Cmd+Shift+J reveals the most-recently hidden.
+                    // (Cmd+H/Cmd+Shift+H are reserved by macOS for Hide/Hide Others.)
+                    if (has_gui and !has_blocking_mod and (mod & c.SDL_KMOD_SHIFT) == 0 and key == c.SDLK_J) {
+                        if (config.ui.show_hotkey_feedback) ui.showHotkey("⌘J", now);
+                        const idx = anim_state.focused_session;
+                        if (idx < sessions.len and sessions[idx].isVisible()) {
+                            if (countVisibleSessions(sessions) <= 1) {
+                                ui.showToast("Can't hide the last terminal", now);
+                            } else {
+                                despawnSessionAtIndex(
+                                    idx,
+                                    true,
+                                    allocator,
+                                    sessions,
+                                    &grid,
+                                    &anim_state,
+                                    session_interaction_component,
+                                    &render_cache,
+                                    &loop,
+                                    animations_enabled,
+                                    now,
+                                    render_width,
+                                    render_height,
+                                    ui_scale,
+                                    &font,
+                                    config.grid.font_scale,
+                                    &full_cols,
+                                    &full_rows,
+                                    &cell_width_pixels,
+                                    &cell_height_pixels,
+                                );
+                                ui.showToast("Hidden — ⌘⇧J to reveal", now);
+                            }
+                        }
+                        continue;
+                    }
+
+                    if (has_gui and !has_blocking_mod and (mod & c.SDL_KMOD_SHIFT) != 0 and key == c.SDLK_J) {
+                        if (config.ui.show_hotkey_feedback) ui.showHotkey("⌘⇧J", now);
+                        // Most-recently hidden = highest index (hidden compact to the back).
+                        var reveal_idx: ?usize = null;
+                        var ri: usize = sessions.len;
+                        while (ri > 0) {
+                            ri -= 1;
+                            if (sessions[ri].spawned and sessions[ri].hidden) {
+                                reveal_idx = ri;
+                                break;
+                            }
+                        }
+                        if (reveal_idx) |ridx| {
+                            const reveal_id = sessions[ridx].id;
+                            sessions[ridx].hidden = false;
+                            sessions[ridx].markDirty();
+                            compactSessions(sessions, session_interaction_component.viewSlice(), &render_cache, &anim_state);
+                            const new_dims = GridLayout.calculateDimensions(countVisibleSessions(sessions));
+                            grid.cols = new_dims.cols;
+                            grid.rows = new_dims.rows;
+                            cell_width_pixels = @divFloor(render_width, @as(c_int, @intCast(grid.cols)));
+                            cell_height_pixels = @divFloor(render_height, @as(c_int, @intCast(grid.rows)));
+                            anim_state.mode = .Grid;
+                            if (findSessionIndexById(sessions, reveal_id)) |new_idx| {
+                                anim_state.focused_session = new_idx;
+                            }
+                            applyTerminalLayout(sessions, allocator, &font, render_width, render_height, ui_scale, &anim_state, grid.cols, grid.rows, config.grid.font_scale, &full_cols, &full_rows);
+                            ui.showToast("Revealed terminal", now);
+                        } else {
+                            ui.showToast("No hidden terminals", now);
                         }
                         continue;
                     }
@@ -2933,6 +3025,7 @@ pub fn run() !void {
             .DespawnSession => |idx| {
                 despawnSessionAtIndex(
                     idx,
+                    false,
                     allocator,
                     sessions,
                     &grid,
@@ -3357,7 +3450,12 @@ pub fn run() !void {
                 const eff_scale = (1.0 / @as(f32, @floatFromInt(grid_dim))) * config.grid.font_scale;
                 const target_w_f = @max(1.0, @as(f32, @floatFromInt(font.cell_width)) * eff_scale);
                 const target_h_f = @max(1.0, @as(f32, @floatFromInt(font.cell_height)) * eff_scale);
-                const desired = layout.gridFontSize(&shared_font_cache, @intFromFloat(target_w_f), @intFromFloat(target_h_f), min_grid_font_size, max_font_size);
+                // Estimate the grid font size directly: cell size scales ~linearly
+                // with point size, so size ~= base_size * eff_scale. Opens one font
+                // instead of probing every size (which caused a one-time hitch on
+                // the first resize). grid_render_scale below absorbs the rounding.
+                const base_pt: f32 = @floatFromInt(layout.scaledFontSize(font_size, ui_scale));
+                const desired = std.math.clamp(@as(c_int, @intFromFloat(@round(base_pt * eff_scale))), min_grid_font_size, max_font_size);
                 if (desired != grid_font_size or shared_font_cache.generation != grid_font_generation) {
                     if (initSharedFont(allocator, renderer, &shared_font_cache, desired)) |new_grid_font| {
                         grid_font.deinit();

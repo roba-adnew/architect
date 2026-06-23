@@ -88,7 +88,7 @@ pub const RenderCache = struct {
     pub fn anyDirty(self: *RenderCache, sessions: []const *SessionState) bool {
         std.debug.assert(sessions.len == self.entries.len);
         for (sessions, 0..) |session, i| {
-            if (!session.spawned) continue;
+            if (!session.isVisible()) continue;
             if (session.render_epoch != self.entries[i].presented_epoch) return true;
         }
         return false;
@@ -144,7 +144,7 @@ pub fn render(
                 var i: usize = 0;
                 while (i < grid_slots_to_render) : (i += 1) {
                     const session = sessions[i];
-                    if (!session.spawned) continue;
+                    if (!session.isVisible()) continue;
 
                     const view = &views[i];
                     const attn_waving = view.wave_start_time > 0 and
@@ -243,7 +243,7 @@ pub fn render(
             while (i < grid_slots_to_render) : (i += 1) {
                 const session = sessions[i];
                 if (i != anim_state.focused_session) {
-                    if (!session.spawned) continue;
+                    if (!session.isVisible()) continue;
                     const grid_row: c_int = @intCast(i / grid_cols);
                     const grid_col: c_int = @intCast(i % grid_cols);
 
@@ -269,7 +269,7 @@ pub fn render(
         .GridResizing => {
             // Render session contents first so borders draw on top.
             for (sessions, 0..) |session, i| {
-                if (!session.spawned) continue;
+                if (!session.isVisible()) continue;
 
                 // Get animated rect from GridLayout if available
                 const cell_rect: Rect = if (grid) |g| blk: {
@@ -303,7 +303,7 @@ pub fn render(
 
             // Render borders and overlays on top of the animated content.
             for (sessions, 0..) |session, i| {
-                if (!session.spawned) continue;
+                if (!session.isVisible()) continue;
 
                 const cell_rect: Rect = if (grid) |g| blk: {
                     if (g.getAnimatedRect(i, current_time)) |animated_rect| {
@@ -396,7 +396,7 @@ fn renderSessionContent(
     theme: *const colors.Theme,
     ui_scale: f32,
 ) RenderError!void {
-    if (!session.spawned) return;
+    if (!session.isVisible()) return;
 
     const terminal = session.terminal orelse {
         log.err("session {d} is spawned but terminal is null!", .{session.id});
@@ -809,7 +809,7 @@ fn renderTerminalScrollbar(
     theme: *const colors.Theme,
     ui_scale: f32,
 ) void {
-    if (!session.spawned) {
+    if (!session.isVisible()) {
         view.terminal_scrollbar.hideNow();
         return;
     }
@@ -1044,7 +1044,7 @@ fn renderSessionCached(
     theme: *const colors.Theme,
     ui_scale: f32,
 ) RenderError!void {
-    if (!session.spawned) {
+    if (!session.isVisible()) {
         cache_entry.presented_epoch = session.render_epoch;
         return;
     }

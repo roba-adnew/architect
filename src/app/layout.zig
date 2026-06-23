@@ -5,7 +5,6 @@ const font_mod = @import("../font.zig");
 const ghostty_vt = @import("ghostty-vt");
 const pty_mod = @import("../pty.zig");
 const renderer_mod = @import("../render/renderer.zig");
-const font_cache_mod = @import("../font_cache.zig");
 const dpi = @import("../dpi.zig");
 const session_state = @import("../session/state.zig");
 const shell_mod = @import("../shell.zig");
@@ -122,37 +121,6 @@ pub fn calculateGridCellTerminalSize(font: *const font_mod.Font, window_width: c
     const cell_width = @divFloor(window_width, @as(c_int, @intCast(grid_cols)));
     const cell_height = @divFloor(window_height, @as(c_int, @intCast(grid_rows)));
     return calculateTerminalSize(font, cell_width, cell_height, grid_font_scale, ui_scale);
-}
-
-/// Largest point size in [min_size, max_size] whose native "M" cell fits inside
-/// the target device-pixel cell (`target_w` x `target_h` = the on-screen cell the
-/// grid would otherwise downscale to). Rendering a font opened at this size keeps
-/// grid text crisp: the renderer's per-glyph scale lands near 1.0 instead of a
-/// heavy GPU downscale. Returns `min_size` if even the smallest font overshoots
-/// (the renderer then applies a small residual downscale). Probes are cached in
-/// `cache`, so repeated calls are cheap.
-pub fn gridFontSize(
-    cache: *font_cache_mod.FontCache,
-    target_w: c_int,
-    target_h: c_int,
-    min_size: c_int,
-    max_size: c_int,
-) c_int {
-    var best: c_int = min_size;
-    var size: c_int = min_size;
-    while (size <= max_size) : (size += 1) {
-        const set = cache.get(size) catch |err| {
-            log.warn("grid font probe failed at size {d}: {}", .{ size, err });
-            break;
-        };
-        var cw: c_int = 0;
-        var ch: c_int = 0;
-        if (!c.TTF_GetStringSize(set.regular, "M", 1, &cw, &ch)) break;
-        // Cell metrics grow monotonically with point size, so the first overshoot
-        // is the ceiling.
-        if (cw <= target_w and ch <= target_h) best = size else break;
-    }
-    return best;
 }
 
 pub const Sizes = struct {

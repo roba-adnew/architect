@@ -86,6 +86,9 @@ pub const SessionState = struct {
     render_epoch: u64 = 1,
     spawned: bool = false,
     dead: bool = false,
+    /// Hidden from the grid (Cmd+H) but the session/shell stays alive; revealed
+    /// later via the switcher. `isVisible()` = spawned and not hidden.
+    hidden: bool = false,
     shell_path: []const u8,
     pty_size: pty_mod.winsize,
     session_id_z: [session_id_buf_len:0]u8,
@@ -741,6 +744,12 @@ pub const SessionState = struct {
         self.cwd_path = try self.allocator.dupe(u8, path);
         self.cwd_basename = basenameForDisplay(self.cwd_path.?);
         self.markDirty();
+    }
+
+    /// Alive and shown in the grid: spawned and not hidden. Hidden sessions keep
+    /// running but are excluded from the grid layout and rendering.
+    pub fn isVisible(self: *const SessionState) bool {
+        return self.spawned and !self.hidden;
     }
 
     /// Returns true when the PTY's foreground process group differs from the
