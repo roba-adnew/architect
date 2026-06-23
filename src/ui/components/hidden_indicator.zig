@@ -26,21 +26,13 @@ pub const HiddenIndicatorComponent = struct {
         .render = render,
     };
 
-    fn hiddenCount(host: *const types.UiHost) usize {
-        var n: usize = 0;
-        for (host.sessions) |info| {
-            if (info.spawned and info.hidden) n += 1;
-        }
-        return n;
-    }
-
     fn pillRect(self: *HiddenIndicatorComponent, host: *const types.UiHost) geom.Rect {
         return self.overlay.rect(host.now_ms, host.window_w, host.window_h, host.ui_scale);
     }
 
     fn handleEvent(ptr: *anyopaque, host: *const types.UiHost, event: *const c.SDL_Event, _: *types.UiActionQueue) bool {
         const self: *HiddenIndicatorComponent = @ptrCast(@alignCast(ptr));
-        if (hiddenCount(host) == 0) {
+        if (types.hiddenCount(host.sessions) == 0) {
             self.hovered = false;
             return false;
         }
@@ -66,13 +58,13 @@ pub const HiddenIndicatorComponent = struct {
 
     fn hitTest(ptr: *anyopaque, host: *const types.UiHost, x: c_int, y: c_int) bool {
         const self: *HiddenIndicatorComponent = @ptrCast(@alignCast(ptr));
-        if (hiddenCount(host) == 0) return false;
+        if (types.hiddenCount(host.sessions) == 0) return false;
         return geom.containsPoint(pillRect(self, host), x, y);
     }
 
     fn render(ptr: *anyopaque, host: *const types.UiHost, renderer: *c.SDL_Renderer, assets: *types.UiAssets) void {
         const self: *HiddenIndicatorComponent = @ptrCast(@alignCast(ptr));
-        const n = hiddenCount(host);
+        const n = types.hiddenCount(host.sessions);
         if (n == 0) return; // no hidden terminals -> no pill
         const font_cache = assets.font_cache orelse return;
         const theme = host.theme;

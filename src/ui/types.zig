@@ -17,7 +17,21 @@ pub const SessionUiInfo = struct {
     /// Terminal title set by the program (OSC 0/2) — e.g. the name from Claude
     /// Code's /rename — or null if unset. Borrows the session-owned string.
     agent_name: ?[]const u8 = null,
+
+    /// Spawned but pulled out of the grid — listed by the hidden-terminals switcher.
+    pub fn isHidden(self: SessionUiInfo) bool {
+        return self.spawned and self.hidden;
+    }
 };
+
+/// Number of hidden terminals (spawned but pulled out of the grid).
+pub fn hiddenCount(sessions: []const SessionUiInfo) usize {
+    var n: usize = 0;
+    for (sessions) |info| {
+        if (info.isHidden()) n += 1;
+    }
+    return n;
+}
 
 pub const UiHost = struct {
     now_ms: i64,

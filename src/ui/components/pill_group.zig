@@ -55,14 +55,6 @@ pub const PillGroupComponent = struct {
         return false;
     }
 
-    fn hiddenCount(host: *const types.UiHost) usize {
-        var n: usize = 0;
-        for (host.sessions) |info| {
-            if (info.spawned and info.hidden) n += 1;
-        }
-        return n;
-    }
-
     /// Pack the visible pills into consecutive slots (slot 0 = rightmost) so a
     /// hidden pill never leaves a gap. Each pill is conditionally shown — recent
     /// folders only with history, worktree only on-git, the hidden indicator only
@@ -80,7 +72,7 @@ pub const PillGroupComponent = struct {
             self.worktree.overlay.slot = slot;
             slot += 1;
         }
-        if (hiddenCount(host) > 0) {
+        if (types.hiddenCount(host.sessions) > 0) {
             self.hidden_indicator.overlay.slot = slot;
             slot += 1;
         }

@@ -83,31 +83,23 @@ pub const HiddenSwitcherComponent = struct {
         return if (b.len == 0) "/" else b;
     }
 
-    /// Max displayed characters (codepoints) for an auto-generated title before
-    /// truncating with an ellipsis.
+    /// Max displayed bytes for an auto-generated title before the ellipsis (the
+    /// auto-names are ASCII, so bytes == characters here).
     const title_display_cap = 10;
     const ellipsis = "\u{2026}"; // …
 
     /// Display form of a title. A name you set via /rename has no spaces and is
     /// shown in full; Claude Code's auto-generated names are sentence-like (they
     /// contain spaces), so those are capped at `title_display_cap` + ellipsis.
-    /// Codepoint-aware so multibyte names don't split mid-character.
     fn displayTitle(title: []const u8, buf: []u8) []const u8 {
         if (std.mem.indexOfScalar(u8, title, ' ') == null) return title; // user-set: keep full
-        var view = std.unicode.Utf8View.init(title) catch return title; // invalid UTF-8: show raw
-        var it = view.iterator();
-        var cp: usize = 0;
-        var end: usize = 0;
-        while (it.nextCodepointSlice()) |s| : (cp += 1) {
-            if (cp == title_display_cap) {
-                if (end + ellipsis.len > buf.len) return title[0..end];
-                @memcpy(buf[0..end], title[0..end]);
-                @memcpy(buf[end .. end + ellipsis.len], ellipsis);
-                return buf[0 .. end + ellipsis.len];
-            }
-            end += s.len;
-        }
-        return title; // short phrase: no truncation needed
+        if (title.len <= title_display_cap) return title; // short phrase: keep
+        var end: usize = title_display_cap;
+        while (end > 0 and title[end] & 0xC0 == 0x80) end -= 1; // back up off a UTF-8 split
+        if (end + ellipsis.len > buf.len) return title[0..end];
+        @memcpy(buf[0..end], title[0..end]);
+        @memcpy(buf[end .. end + ellipsis.len], ellipsis);
+        return buf[0 .. end + ellipsis.len];
     }
 
     /// Row label: "<title>.<folder>" when a title is set, else just "<folder>".
@@ -139,7 +131,7 @@ pub const HiddenSwitcherComponent = struct {
         var n: usize = 0;
         for (sessions, 0..) |info, i| {
             if (n >= max_entries) break;
-            if (!(info.spawned and info.hidden)) continue;
+            if (!info.isHidden()) continue;
             if (!matchesQuery(info, q)) continue;
             out[n] = i;
             n += 1;
@@ -309,16 +301,16 @@ pub const HiddenSwitcherComponent = struct {
         defer self.first_frame.markDrawn();
         if (!self.open) return;
 
-        var total_buf: [max_entries]usize = undefined;
-        const total = collectHidden(host.sessions, "", &total_buf);
+        var buf: [max_entries]usize = undefined;
+        const n = collectHidden(host.sessions, self.query(), &buf);
+        // Unfiltered count for the title. Equals n with no filter, else a cheap
+        // count rather than a second index-collecting scan.
+        const total = if (self.query_len == 0) n else types.hiddenCount(host.sessions);
         if (total == 0) {
-            // Everything got revealed/closed out from under us; dismiss.
+            // Nothing is hidden anymore (e.g. revealed elsewhere); dismiss.
             self.open = false;
             return;
         }
-
-        var buf: [max_entries]usize = undefined;
-        const n = collectHidden(host.sessions, self.query(), &buf);
         const sel = if (n == 0) 0 else @min(self.selected, n - 1);
         const font_cache = assets.font_cache orelse return;
         const theme = host.theme;

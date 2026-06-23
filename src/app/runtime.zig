@@ -2403,50 +2403,47 @@ pub fn run() !void {
                         continue;
                     }
 
-                    // Cmd+J hides the focused terminal (keeps it alive, drops it
-                    // from the grid); Cmd+Shift+J reveals the most-recently hidden.
-                    // (Cmd+H/Cmd+Shift+H are reserved by macOS for Hide/Hide Others.)
-                    if (has_gui and !has_blocking_mod and (mod & c.SDL_KMOD_SHIFT) == 0 and key == c.SDLK_J) {
-                        if (config.ui.show_hotkey_feedback) ui.showHotkey("⌘J", now);
-                        const idx = anim_state.focused_session;
-                        if (idx < sessions.len and sessions[idx].isVisible()) {
-                            if (countVisibleSessions(sessions) <= 1) {
-                                ui.showToast("Can't hide the last terminal", now);
-                            } else {
-                                despawnSessionAtIndex(
-                                    idx,
-                                    true,
-                                    allocator,
-                                    sessions,
-                                    &grid,
-                                    &anim_state,
-                                    session_interaction_component,
-                                    &render_cache,
-                                    &loop,
-                                    animations_enabled,
-                                    now,
-                                    render_width,
-                                    render_height,
-                                    ui_scale,
-                                    &font,
-                                    config.grid.font_scale,
-                                    &full_cols,
-                                    &full_rows,
-                                    &cell_width_pixels,
-                                    &cell_height_pixels,
-                                );
-                                ui.showToast("Hidden — ⌘⇧J to reveal", now);
+                    // Cmd+J hides the focused terminal (keeps it alive, drops it from
+                    // the grid); Cmd+Shift+J opens the reveal picker — but the switcher
+                    // consumes ⌘⇧J before this whenever anything is hidden, so here it
+                    // only means "nothing to reveal". (Cmd+H is reserved by macOS.)
+                    if (has_gui and !has_blocking_mod and key == c.SDLK_J) {
+                        if ((mod & c.SDL_KMOD_SHIFT) == 0) {
+                            if (config.ui.show_hotkey_feedback) ui.showHotkey("⌘J", now);
+                            const idx = anim_state.focused_session;
+                            if (idx < sessions.len and sessions[idx].isVisible()) {
+                                if (countVisibleSessions(sessions) <= 1) {
+                                    ui.showToast("Can't hide the last terminal", now);
+                                } else {
+                                    despawnSessionAtIndex(
+                                        idx,
+                                        true,
+                                        allocator,
+                                        sessions,
+                                        &grid,
+                                        &anim_state,
+                                        session_interaction_component,
+                                        &render_cache,
+                                        &loop,
+                                        animations_enabled,
+                                        now,
+                                        render_width,
+                                        render_height,
+                                        ui_scale,
+                                        &font,
+                                        config.grid.font_scale,
+                                        &full_cols,
+                                        &full_rows,
+                                        &cell_width_pixels,
+                                        &cell_height_pixels,
+                                    );
+                                    ui.showToast("Hidden — ⌘⇧J to reveal", now);
+                                }
                             }
+                        } else {
+                            if (config.ui.show_hotkey_feedback) ui.showHotkey("⌘⇧J", now);
+                            ui.showToast("No hidden terminals", now);
                         }
-                        continue;
-                    }
-
-                    if (has_gui and !has_blocking_mod and (mod & c.SDL_KMOD_SHIFT) != 0 and key == c.SDLK_J) {
-                        // The hidden-terminals switcher consumes ⌘⇧J before this when
-                        // anything is hidden, opening the picker. Reaching here means
-                        // nothing is hidden, so just tell the user.
-                        if (config.ui.show_hotkey_feedback) ui.showHotkey("⌘⇧J", now);
-                        ui.showToast("No hidden terminals", now);
                         continue;
                     }
 
