@@ -29,7 +29,7 @@ const shortcuts = [_]Shortcut{
     .{ .key = "⌘K", .desc = "Clear terminal" },
     .{ .key = "⌘W", .desc = "Delete terminal" },
     .{ .key = "⌘,", .desc = "Open config file" },
-    .{ .key = "Drag (full view)", .desc = "Select text" },
+    .{ .key = "Drag", .desc = "Select text (grid or full view)" },
     .{ .key = "⌘C", .desc = "Copy selection to clipboard" },
     .{ .key = "⌘V", .desc = "Paste clipboard into terminal" },
     .{ .key = "Mouse wheel", .desc = "Scroll history" },

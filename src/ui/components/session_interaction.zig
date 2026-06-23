@@ -42,6 +42,9 @@ pub const SessionInteractionComponent = struct {
     pointer_cursor: ?*c.SDL_Cursor = null,
     current_cursor: CursorKind = .arrow,
     last_update_ms: i64 = 0,
+    /// Grid-view text selection: the pane index a drag-select started in, so motion
+    /// and release stay bound to that pane. Null when not selecting in grid view.
+    grid_selection_idx: ?usize = null,
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -195,6 +198,15 @@ pub const SessionInteractionComponent = struct {
                             log.warn("failed to queue focus action for session {d}: {}", .{ clicked_session, err });
                         },
                     }
+                    // Arm drag-to-select on the clicked pane. A plain click just
+                    // focuses (above); this only becomes a real selection once the
+                    // mouse moves far enough (handled in MOUSE_MOTION).
+                    if (event.button.button == c.SDL_BUTTON_LEFT and event.button.clicks == 1) {
+                        if (gridViewHitFromMouse(self.sessions, self.views, host, mouse_x, mouse_y)) |hit| {
+                            beginSelection(self.sessions[hit.idx], &self.views[hit.idx], hit.pin);
+                            self.grid_selection_idx = hit.idx;
+                        }
+                    }
                     return true;
                 }
 
@@ -300,6 +312,15 @@ pub const SessionInteractionComponent = struct {
                         return true;
                     }
                 }
+
+                if (host.view_mode == .Grid and event.button.button == c.SDL_BUTTON_LEFT) {
+                    if (self.grid_selection_idx) |idx| {
+                        const was_dragging = idx < self.views.len and self.views[idx].selection_dragging;
+                        if (idx < self.views.len) endSelection(&self.views[idx]);
+                        self.grid_selection_idx = null;
+                        if (was_dragging) return true; // consumed the drag-select release
+                    }
+                }
             },
             c.SDL_EVENT_MOUSE_MOTION => {
                 const mouse_x: c_int = @intFromFloat(event.motion.x);
@@ -401,6 +422,31 @@ pub const SessionInteractionComponent = struct {
                             if (view.hovered_link_start != null) {
                                 view.clearHover();
                                 focused.markDirty();
+                            }
+                        }
+                    }
+                }
+
+                // Grid-view drag selection, bound to the pane the drag started in.
+                if (!dragging_scrollbar and host.view_mode == .Grid) {
+                    if (self.grid_selection_idx) |idx| {
+                        if (idx < self.sessions.len) {
+                            const session = self.sessions[idx];
+                            const view = &self.views[idx];
+                            if (gridViewHitFromMouse(self.sessions, self.views, host, mouse_x, mouse_y)) |hit| {
+                                if (hit.idx == idx) {
+                                    if (view.selection_dragging) {
+                                        updateSelectionDrag(session, view, hit.pin);
+                                        desired_cursor = .ibeam;
+                                    } else if (view.selection_pending) {
+                                        if (view.selection_anchor) |anchor| {
+                                            if (!pinsEqual(anchor, hit.pin)) {
+                                                startSelectionDrag(session, view, hit.pin);
+                                                desired_cursor = .ibeam;
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -820,6 +866,58 @@ fn endSelection(view: *SessionViewState) void {
 
 fn pinsEqual(a: ghostty_vt.Pin, b: ghostty_vt.Pin) bool {
     return a.node == b.node and a.x == b.x and a.y == b.y;
+}
+
+const GridHit = struct { idx: usize, pin: ghostty_vt.Pin };
+
+/// Map a mouse position in grid view to (pane index, terminal pin). Finds the pane
+/// under the cursor, then the cell within that pane's content area.
+/// ponytail: per-cell pixel size is approximated as drawable/cells rather than the
+/// exact grid-font metrics; content fills the drawable to within a fraction of a
+/// cell, which is plenty for text selection. Tighten with grid font/scale if needed.
+fn gridViewHitFromMouse(
+    sessions: []*SessionState,
+    views: []SessionViewState,
+    host: *const types.UiHost,
+    mouse_x: c_int,
+    mouse_y: c_int,
+) ?GridHit {
+    if (host.view_mode != .Grid) return null;
+    if (mouse_x < 0 or mouse_y < 0) return null;
+    if (host.cell_w <= 0 or host.cell_h <= 0 or host.grid_cols == 0 or host.grid_rows == 0) return null;
+
+    const gc: usize = @min(@as(usize, @intCast(@divFloor(mouse_x, host.cell_w))), host.grid_cols - 1);
+    const gr: usize = @min(@as(usize, @intCast(@divFloor(mouse_y, host.cell_h))), host.grid_rows - 1);
+    const idx = gr * host.grid_cols + gc;
+    if (idx >= sessions.len) return null;
+
+    const session = sessions[idx];
+    if (!session.spawned or session.terminal == null) return null;
+    const terminal = &session.terminal.?;
+    const cols: c_int = terminal.cols;
+    const rows: c_int = terminal.rows;
+    if (cols == 0 or rows == 0) return null;
+
+    const padding = dpi.scale(renderer_mod.terminal_padding, host.ui_scale);
+    const origin_x = @as(c_int, @intCast(gc)) * host.cell_w + padding;
+    const origin_y = @as(c_int, @intCast(gr)) * host.cell_h + padding;
+    const drawable_w = host.cell_w - padding * 2;
+    const drawable_h = host.cell_h - padding * 2;
+    if (drawable_w <= 0 or drawable_h <= 0) return null;
+    if (mouse_x < origin_x or mouse_y < origin_y) return null;
+
+    const rel_x = @min(mouse_x - origin_x, drawable_w - 1);
+    const rel_y = @min(mouse_y - origin_y, drawable_h - 1);
+    const col: u16 = @intCast(@min(cols - 1, @divFloor(rel_x * cols, drawable_w)));
+    const row: u16 = @intCast(@min(rows - 1, @divFloor(rel_y * rows, drawable_h)));
+
+    const view = &views[idx];
+    const point = if (view.is_viewing_scrollback)
+        ghostty_vt.point.Point{ .viewport = .{ .x = col, .y = row } }
+    else
+        ghostty_vt.point.Point{ .active = .{ .x = col, .y = row } };
+    const pin = terminal.screens.active.pages.pin(point) orelse return null;
+    return .{ .idx = idx, .pin = pin };
 }
 
 fn isWordCharacter(codepoint: u21) bool {

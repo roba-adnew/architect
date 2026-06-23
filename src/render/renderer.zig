@@ -522,7 +522,24 @@ fn renderSessionContent(
                 fg_color = chooseCursorFg(theme);
             }
 
-            if (!colors.colorsEqual(bg_color, session_bg_color)) {
+            // Selected text renders as black glyphs on a solid white background for
+            // high contrast. Set here so the normal bg fill + glyph run pick it up;
+            // the run flushes when fg changes, so the black text lands at the edges.
+            const is_selected = blk: {
+                const sel = active_selection orelse break :blk false;
+                const point_tag = if (view.is_viewing_scrollback)
+                    ghostty_vt.point.Point{ .viewport = .{ .x = @intCast(col), .y = @intCast(row) } }
+                else
+                    ghostty_vt.point.Point{ .active = .{ .x = @intCast(col), .y = @intCast(source_row) } };
+                const pin = pages.pin(point_tag) orelse break :blk false;
+                break :blk sel.contains(screen, pin);
+            };
+            if (is_selected) {
+                bg_color = c.SDL_Color{ .r = 255, .g = 255, .b = 255, .a = 255 };
+                fg_color = c.SDL_Color{ .r = 0, .g = 0, .b = 0, .a = 255 };
+            }
+
+            if (is_selected or !colors.colorsEqual(bg_color, session_bg_color)) {
                 _ = c.SDL_SetRenderDrawColor(renderer, bg_color.r, bg_color.g, bg_color.b, 255);
                 const cell_rect = c.SDL_FRect{
                     .x = @floatFromInt(x),
@@ -531,26 +548,6 @@ fn renderSessionContent(
                     .h = @floatFromInt(eff_ch),
                 };
                 _ = c.SDL_RenderFillRect(renderer, &cell_rect);
-            }
-
-            if (active_selection) |sel| {
-                const point_tag = if (view.is_viewing_scrollback)
-                    ghostty_vt.point.Point{ .viewport = .{ .x = @intCast(col), .y = @intCast(row) } }
-                else
-                    ghostty_vt.point.Point{ .active = .{ .x = @intCast(col), .y = @intCast(source_row) } };
-                if (pages.pin(point_tag)) |pin| {
-                    if (sel.contains(screen, pin)) {
-                        _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
-                        _ = c.SDL_SetRenderDrawColor(renderer, theme.selection.r, theme.selection.g, theme.selection.b, theme.selection.a);
-                        const sel_rect = c.SDL_FRect{
-                            .x = @floatFromInt(x),
-                            .y = @floatFromInt(y),
-                            .w = @floatFromInt(eff_cw * glyph_width_cells),
-                            .h = @floatFromInt(eff_ch),
-                        };
-                        _ = c.SDL_RenderFillRect(renderer, &sel_rect);
-                    }
-                }
             }
 
             const has_hover_underline = blk: {
