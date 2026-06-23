@@ -1842,6 +1842,14 @@ pub fn run() !void {
     try ui.register(recent_folders_component);
     recent_folders_comp_ptr.setFolders(persistence.getRecentFolders());
 
+    const hidden_switcher_comp_ptr = try allocator.create(ui_mod.hidden_switcher.HiddenSwitcherComponent);
+    hidden_switcher_comp_ptr.* = .{ .allocator = allocator };
+    try ui.register(.{
+        .ptr = hidden_switcher_comp_ptr,
+        .vtable = &ui_mod.hidden_switcher.HiddenSwitcherComponent.vtable,
+        .z_index = 1000,
+    });
+
     const help_comp_ptr = try allocator.create(ui_mod.help_overlay.HelpOverlayComponent);
     help_comp_ptr.* = .{ .allocator = allocator };
     const help_component = ui_mod.UiComponent{
@@ -2412,36 +2420,11 @@ pub fn run() !void {
                     }
 
                     if (has_gui and !has_blocking_mod and (mod & c.SDL_KMOD_SHIFT) != 0 and key == c.SDLK_J) {
+                        // The hidden-terminals switcher consumes ⌘⇧J before this when
+                        // anything is hidden, opening the picker. Reaching here means
+                        // nothing is hidden, so just tell the user.
                         if (config.ui.show_hotkey_feedback) ui.showHotkey("⌘⇧J", now);
-                        // Most-recently hidden = highest index (hidden compact to the back).
-                        var reveal_idx: ?usize = null;
-                        var ri: usize = sessions.len;
-                        while (ri > 0) {
-                            ri -= 1;
-                            if (sessions[ri].spawned and sessions[ri].hidden) {
-                                reveal_idx = ri;
-                                break;
-                            }
-                        }
-                        if (reveal_idx) |ridx| {
-                            const reveal_id = sessions[ridx].id;
-                            sessions[ridx].hidden = false;
-                            sessions[ridx].markDirty();
-                            compactSessions(sessions, session_interaction_component.viewSlice(), &render_cache, &anim_state);
-                            const new_dims = GridLayout.calculateDimensions(countVisibleSessions(sessions));
-                            grid.cols = new_dims.cols;
-                            grid.rows = new_dims.rows;
-                            cell_width_pixels = @divFloor(render_width, @as(c_int, @intCast(grid.cols)));
-                            cell_height_pixels = @divFloor(render_height, @as(c_int, @intCast(grid.rows)));
-                            anim_state.mode = .Grid;
-                            if (findSessionIndexById(sessions, reveal_id)) |new_idx| {
-                                anim_state.focused_session = new_idx;
-                            }
-                            applyTerminalLayout(sessions, allocator, &font, render_width, render_height, ui_scale, &anim_state, grid.cols, grid.rows, config.grid.font_scale, &full_cols, &full_rows);
-                            ui.showToast("Revealed terminal", now);
-                        } else {
-                            ui.showToast("No hidden terminals", now);
-                        }
+                        ui.showToast("No hidden terminals", now);
                         continue;
                     }
 
@@ -3034,6 +3017,25 @@ pub fn run() !void {
                 session_interaction_component.clearSelection(anim_state.focused_session);
                 session_interaction_component.clearSelection(idx);
                 anim_state.focused_session = idx;
+            },
+            .RevealHiddenTerminal => |idx| {
+                if (idx >= sessions.len) continue;
+                if (!(sessions[idx].spawned and sessions[idx].hidden)) continue;
+                const reveal_id = sessions[idx].id;
+                sessions[idx].hidden = false;
+                sessions[idx].markDirty();
+                compactSessions(sessions, session_interaction_component.viewSlice(), &render_cache, &anim_state);
+                const new_dims = GridLayout.calculateDimensions(countVisibleSessions(sessions));
+                grid.cols = new_dims.cols;
+                grid.rows = new_dims.rows;
+                cell_width_pixels = @divFloor(render_width, @as(c_int, @intCast(grid.cols)));
+                cell_height_pixels = @divFloor(render_height, @as(c_int, @intCast(grid.rows)));
+                anim_state.mode = .Grid;
+                if (findSessionIndexById(sessions, reveal_id)) |new_idx| {
+                    anim_state.focused_session = new_idx;
+                }
+                applyTerminalLayout(sessions, allocator, &font, render_width, render_height, ui_scale, &anim_state, grid.cols, grid.rows, config.grid.font_scale, &full_cols, &full_rows);
+                ui.showToast("Revealed terminal", now);
             },
             .DespawnSession => |idx| {
                 despawnSessionAtIndex(

@@ -8,6 +8,9 @@ const geom = @import("../geom.zig");
 pub const SessionUiInfo = struct {
     dead: bool,
     spawned: bool,
+    /// Spawned but pulled out of the grid (Cmd+J). Still alive; listed by the
+    /// hidden-terminals switcher so it can be revealed.
+    hidden: bool = false,
     cwd_path: ?[]const u8 = null,
     cwd_basename: ?[]const u8 = null,
     session_status: app_state.SessionStatus = .idle,
@@ -48,6 +51,9 @@ pub const UiAction = union(enum) {
     /// Move the grid's focus/selection highlight to this pane without zooming
     /// it to full screen or spawning a shell. Mirrors Cmd+Arrow grid nav.
     SelectGridSession: usize,
+    /// Un-hide the session at this index (the hidden-terminals switcher picked it)
+    /// and bring it back into the grid.
+    RevealHiddenTerminal: usize,
     RequestCollapseFocused: void,
     ConfirmQuit: void,
     OpenConfig: void,

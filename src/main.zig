@@ -17,4 +17,6 @@ test {
     _ = @import("app/layout.zig");
     _ = @import("ui/components/diff_comment_layout.zig");
     _ = @import("shell.zig");
+    _ = @import("ui/components/hidden_switcher.zig");
+    _ = @import("anim/easing.zig");
 }
