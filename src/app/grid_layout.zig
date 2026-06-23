@@ -205,7 +205,10 @@ pub const GridLayout = struct {
             if (anim.session_idx == session_idx) {
                 const elapsed = now - anim.start_time;
                 const progress = @min(1.0, @as(f32, @floatFromInt(elapsed)) / @as(f32, animation_duration_ms));
-                const eased = easing.easeInOutCubic(progress);
+                // Gentle sine ease: large grid reflows move hundreds of px, and
+                // cubic's 3x peak velocity made the middle frames teleport. Sine's
+                // ~1.57x peak keeps per-frame motion small enough to read as a glide.
+                const eased = easing.easeInOutSine(progress);
                 return interpolateRect(anim.start_rect, anim.target_rect, eased);
             }
         }
