@@ -46,6 +46,12 @@ pub const HiddenSwitcherComponent = struct {
         self.first_frame.markTransition();
     }
 
+    /// Open/close the menu from the top-right count pill. The pill only exists when
+    /// something is hidden, so there's always at least one entry to show.
+    pub fn toggle(self: *HiddenSwitcherComponent) void {
+        if (self.open) self.close() else self.openMenu();
+    }
+
     fn close(self: *HiddenSwitcherComponent) void {
         if (!self.open) return;
         self.open = false;

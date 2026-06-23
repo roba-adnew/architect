@@ -1850,6 +1850,15 @@ pub fn run() !void {
         .z_index = 1000,
     });
 
+    // Top-right count pill; z below the switcher modal so the modal dims over it.
+    const hidden_indicator_comp_ptr = try allocator.create(ui_mod.hidden_indicator.HiddenIndicatorComponent);
+    hidden_indicator_comp_ptr.* = .{ .allocator = allocator, .switcher = hidden_switcher_comp_ptr };
+    try ui.register(.{
+        .ptr = hidden_indicator_comp_ptr,
+        .vtable = &ui_mod.hidden_indicator.HiddenIndicatorComponent.vtable,
+        .z_index = 999,
+    });
+
     const help_comp_ptr = try allocator.create(ui_mod.help_overlay.HelpOverlayComponent);
     help_comp_ptr.* = .{ .allocator = allocator };
     const help_component = ui_mod.UiComponent{
@@ -1859,7 +1868,7 @@ pub fn run() !void {
     };
     try ui.register(help_component);
 
-    const pill_group_component = try ui_mod.pill_group.PillGroupComponent.create(allocator, help_comp_ptr, recent_folders_comp_ptr, worktree_comp_ptr);
+    const pill_group_component = try ui_mod.pill_group.PillGroupComponent.create(allocator, help_comp_ptr, recent_folders_comp_ptr, worktree_comp_ptr, hidden_indicator_comp_ptr);
     try ui.register(pill_group_component);
     const toast_component = try ui_mod.toast.ToastComponent.init(allocator);
     try ui.register(toast_component.asComponent());
