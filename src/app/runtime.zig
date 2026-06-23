@@ -546,6 +546,19 @@ fn compactSessions(
         write_idx += 1;
     }
 
+    // Keep visible sessions in creation (id) order so a revealed terminal slides
+    // back to its original slot instead of landing at the end. ponytail: O(n^2)
+    // insertion sort, fine for the handful of grid slots.
+    var a: usize = 1;
+    while (a < write_idx) : (a += 1) {
+        var b: usize = a;
+        while (b > 0 and sessions[b - 1].id > sessions[b].id) : (b -= 1) {
+            std.mem.swap(*SessionState, &sessions[b - 1], &sessions[b]);
+            std.mem.swap(SessionViewState, &views[b - 1], &views[b]);
+            std.mem.swap(renderer_mod.RenderCache.Entry, &render_cache.entries[b - 1], &render_cache.entries[b]);
+        }
+    }
+
     for (sessions, 0..) |session, slot_idx| {
         session.slot_index = slot_idx;
     }
