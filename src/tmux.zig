@@ -224,3 +224,30 @@ pub fn scrollHistory(allocator: std.mem.Allocator, slot_index: usize, lines: u16
     child.stderr_behavior = .Ignore;
     _ = child.spawnAndWait() catch return;
 }
+
+/// Exit copy-mode for a persistent session's pane (best-effort, no-op if not in
+/// copy-mode). `scrollHistory` leaves the pane in tmux copy-mode, which is modal —
+/// the cursor and keys belong to the scroll, not the app underneath — so the first
+/// keystroke afterward should snap back to the live prompt. Called from
+/// `SessionState.sendInput`; spawnAndWait so copy-mode is gone before the keystroke
+/// is written to the PTY (otherwise the key would drive the scroll instead).
+pub fn cancelCopyMode(allocator: std.mem.Allocator, slot_index: usize) void {
+    if (!persistEnabled()) return;
+
+    const tmux_path = findOnPath(allocator, "tmux") orelse return;
+    defer allocator.free(tmux_path);
+
+    const dir = runtimeDir();
+    const socket_path = allocZ(allocator, "{s}/architect-tmux.sock", .{dir}) catch return;
+    defer allocator.free(socket_path);
+    const target = allocZ(allocator, "architect-{d}", .{slot_index}) catch return;
+    defer allocator.free(target);
+
+    var child = std.process.Child.init(&[_][]const u8{
+        tmux_path, "-S", socket_path, "send-keys", "-t", target, "-X", "cancel",
+    }, allocator);
+    child.stdin_behavior = .Ignore;
+    child.stdout_behavior = .Ignore;
+    child.stderr_behavior = .Ignore;
+    _ = child.spawnAndWait() catch return;
+}

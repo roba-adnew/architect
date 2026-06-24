@@ -83,6 +83,9 @@ pub const SessionState = struct {
     /// + tmux present). tmux then owns the scrollback, so wheel-scroll is routed to
     /// tmux copy-mode instead of the (empty) ghostty-vt scrollback. See tmux.scrollHistory.
     tmux_backed: bool = false,
+    /// True after a wheel-scroll left this tmux pane in copy-mode; the next keystroke
+    /// cancels copy-mode so the cursor returns to the live prompt. See sendInput.
+    scrolled_in_copy_mode: bool = false,
     id: usize,
     shell: ?shell_mod.Shell,
     terminal: ?ghostty_vt.Terminal,
@@ -702,6 +705,13 @@ pub const SessionState = struct {
 
     pub fn sendInput(self: *SessionState, data: []const u8) !void {
         if (!self.spawned or self.dead) return;
+        // If the user scrolled this tmux pane up (leaving it in modal copy-mode),
+        // typing should snap back to the live prompt instead of driving the scroll.
+        // Cancel copy-mode first; spawnAndWait so it's gone before `data` hits the PTY.
+        if (self.scrolled_in_copy_mode) {
+            self.scrolled_in_copy_mode = false;
+            tmux.cancelCopyMode(self.allocator, self.slot_index);
+        }
         try self.flushPendingWrites();
         const shell = &(self.shell orelse return);
         const wrote = shell.write(data) catch |err| switch (err) {

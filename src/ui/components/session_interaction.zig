@@ -521,6 +521,9 @@ pub const SessionInteractionComponent = struct {
                                 // out-of-band. Works the same in grid and focus view.
                                 const lines: u16 = @intCast(@min(@abs(scroll_delta), 100));
                                 tmux.scrollHistory(self.allocator, session.slot_index, lines, scroll_delta < 0);
+                                // Pane is now in modal copy-mode; the next keystroke (sendInput)
+                                // cancels it so the cursor returns to the live prompt.
+                                session.scrolled_in_copy_mode = true;
                             } else {
                                 scrollSession(session, view, scroll_delta, host.now_ms);
                                 if (event.wheel.which == c.SDL_TOUCH_MOUSEID) {
