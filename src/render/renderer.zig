@@ -693,7 +693,7 @@ fn renderSessionContent(
     }
 }
 
-fn activeScreenRowOffset(term_rows: u16, visible_rows: usize, cursor_row: usize, is_grid_view: bool, is_viewing_scrollback: bool) usize {
+pub fn activeScreenRowOffset(term_rows: u16, visible_rows: usize, cursor_row: usize, is_grid_view: bool, is_viewing_scrollback: bool) usize {
     if (!is_grid_view or is_viewing_scrollback) return 0;
     if (visible_rows == 0) return 0;
 

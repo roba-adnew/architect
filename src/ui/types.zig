@@ -44,6 +44,11 @@ pub const UiHost = struct {
     grid_rows: usize,
     cell_w: c_int,
     cell_h: c_int,
+    /// Grid font's native cell pixel size (grid_render_scale is 1.0). Lets the
+    /// grid selection hit-test lay cells out exactly as the renderer does.
+    /// Defaults to 0 (hit-test no-ops) for non-grid callers/tests.
+    grid_cell_w: c_int = 0,
+    grid_cell_h: c_int = 0,
     term_cols: u16,
     term_rows: u16,
 

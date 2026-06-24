@@ -13,6 +13,7 @@ const font_mod = @import("../../font.zig");
 const app_state = @import("../../app/app_state.zig");
 const types = @import("../types.zig");
 const scrollbar = @import("scrollbar.zig");
+const cwd_bar_metrics = @import("cwd_bar_metrics.zig");
 const view_state = @import("../session_view_state.zig");
 const UiComponent = @import("../component.zig").UiComponent;
 
@@ -872,9 +873,13 @@ const GridHit = struct { idx: usize, pin: ghostty_vt.Pin };
 
 /// Map a mouse position in grid view to (pane index, terminal pin). Finds the pane
 /// under the cursor, then the cell within that pane's content area.
-/// ponytail: per-cell pixel size is approximated as drawable/cells rather than the
-/// exact grid-font metrics; content fills the drawable to within a fraction of a
-/// cell, which is plenty for text selection. Tighten with grid font/scale if needed.
+///
+/// Mirrors `renderer.renderSessionContent` cell-for-cell: cells are laid out at the
+/// grid font's native pixel size (grid_render_scale is 1.0), the cwd bar reserves
+/// height at the bottom of each tile, and the active screen scrolls by
+/// `activeScreenRowOffset` to keep the cursor visible. The earlier version stretched
+/// the rows proportionally over the full (un-reserved) tile height, so selection
+/// landed ~one row above the click — worse toward the bottom of the pane.
 fn gridViewHitFromMouse(
     sessions: []*SessionState,
     views: []SessionViewState,
@@ -885,6 +890,7 @@ fn gridViewHitFromMouse(
     if (host.view_mode != .Grid) return null;
     if (mouse_x < 0 or mouse_y < 0) return null;
     if (host.cell_w <= 0 or host.cell_h <= 0 or host.grid_cols == 0 or host.grid_rows == 0) return null;
+    if (host.grid_cell_w <= 0 or host.grid_cell_h <= 0) return null;
 
     const gc: usize = @min(@as(usize, @intCast(@divFloor(mouse_x, host.cell_w))), host.grid_cols - 1);
     const gr: usize = @min(@as(usize, @intCast(@divFloor(mouse_y, host.cell_h))), host.grid_rows - 1);
@@ -894,30 +900,61 @@ fn gridViewHitFromMouse(
     const session = sessions[idx];
     if (!session.spawned or session.terminal == null) return null;
     const terminal = &session.terminal.?;
-    const cols: c_int = terminal.cols;
-    const rows: c_int = terminal.rows;
-    if (cols == 0 or rows == 0) return null;
+    const term_cols: c_int = terminal.cols;
+    const term_rows: c_int = terminal.rows;
+    if (term_cols == 0 or term_rows == 0) return null;
 
     const padding = dpi.scale(renderer_mod.terminal_padding, host.ui_scale);
     const origin_x = @as(c_int, @intCast(gc)) * host.cell_w + padding;
     const origin_y = @as(c_int, @intCast(gr)) * host.cell_h + padding;
+    // Grid panes reserve a strip at the bottom for the cwd bar; the renderer drops
+    // it from the drawable height, so the hit-test must too (this was the missing
+    // vertical offset). Same guard as renderer.renderSessionContent.
+    const grid_reserved_h: c_int = if (host.cell_h >= cwd_bar_metrics.minCellHeight(host.ui_scale, renderer_mod.grid_border_thickness))
+        cwd_bar_metrics.reservedHeight(host.ui_scale, renderer_mod.grid_border_thickness)
+    else
+        0;
     const drawable_w = host.cell_w - padding * 2;
-    const drawable_h = host.cell_h - padding * 2;
+    const drawable_h = host.cell_h - padding * 2 - grid_reserved_h;
     if (drawable_w <= 0 or drawable_h <= 0) return null;
     if (mouse_x < origin_x or mouse_y < origin_y) return null;
 
-    const rel_x = @min(mouse_x - origin_x, drawable_w - 1);
-    const rel_y = @min(mouse_y - origin_y, drawable_h - 1);
-    const col: u16 = @intCast(@min(cols - 1, @divFloor(rel_x * cols, drawable_w)));
-    const row: u16 = @intCast(@min(rows - 1, @divFloor(rel_y * rows, drawable_h)));
+    const hit = gridCellAt(mouse_x - origin_x, mouse_y - origin_y, drawable_w, drawable_h, host.grid_cell_w, host.grid_cell_h, term_cols, term_rows) orelse return null;
 
     const view = &views[idx];
     const point = if (view.is_viewing_scrollback)
-        ghostty_vt.point.Point{ .viewport = .{ .x = col, .y = row } }
-    else
-        ghostty_vt.point.Point{ .active = .{ .x = col, .y = row } };
+        ghostty_vt.point.Point{ .viewport = .{ .x = @intCast(hit.col), .y = @intCast(hit.row) } }
+    else blk: {
+        const row_offset = renderer_mod.activeScreenRowOffset(
+            @intCast(term_rows),
+            @intCast(hit.visible_rows),
+            terminal.screens.active.cursor.y,
+            true,
+            false,
+        );
+        break :blk ghostty_vt.point.Point{ .active = .{ .x = @intCast(hit.col), .y = @intCast(@as(usize, @intCast(hit.row)) + row_offset) } };
+    };
     const pin = terminal.screens.active.pages.pin(point) orelse return null;
     return .{ .idx = idx, .pin = pin };
+}
+
+const GridCellHit = struct { col: c_int, row: c_int, visible_cols: c_int, visible_rows: c_int };
+
+/// Pure pixel->cell mapping for one grid pane's content area. `rel_x`/`rel_y` are
+/// mouse coords relative to the content origin (after padding). Cells are laid out
+/// at the fixed native cell size, exactly as the renderer draws them — NOT stretched
+/// to fill the drawable. `drawable_h` already has the cwd-bar strip removed.
+fn gridCellAt(rel_x: c_int, rel_y: c_int, drawable_w: c_int, drawable_h: c_int, cell_w: c_int, cell_h: c_int, term_cols: c_int, term_rows: c_int) ?GridCellHit {
+    if (rel_x < 0 or rel_y < 0 or cell_w <= 0 or cell_h <= 0) return null;
+    const visible_cols: c_int = @min(term_cols, @divFloor(drawable_w, cell_w));
+    const visible_rows: c_int = @min(term_rows, @divFloor(drawable_h, cell_h));
+    if (visible_cols <= 0 or visible_rows <= 0) return null;
+    return .{
+        .col = @min(visible_cols - 1, @divFloor(rel_x, cell_w)),
+        .row = @min(visible_rows - 1, @divFloor(rel_y, cell_h)),
+        .visible_cols = visible_cols,
+        .visible_rows = visible_rows,
+    };
 }
 
 fn isWordCharacter(codepoint: u21) bool {
@@ -1488,4 +1525,32 @@ test "cellCodepoint honors content_tag for text and non-text cells" {
         .content_tag = .bg_color_rgb,
         .content = .{ .color_palette = 0xFF },
     }));
+}
+
+test "gridCellAt maps by fixed cell size, not proportional stretch" {
+    // 12x16 px cells, 30x20 terminal, content area 200x100 px (cwd bar already
+    // removed). Only 8 rows / 16 cols actually fit and get drawn.
+    const cw = 12;
+    const ch = 16;
+
+    const mid = gridCellAt(50, 40, 200, 100, cw, ch, 30, 20).?;
+    try std.testing.expectEqual(@as(c_int, 16), mid.visible_cols); // 200/12
+    try std.testing.expectEqual(@as(c_int, 6), mid.visible_rows); //  100/16
+    try std.testing.expectEqual(@as(c_int, 4), mid.col); // 50/12
+    try std.testing.expectEqual(@as(c_int, 2), mid.row); // 40/16
+
+    // Fixed-cell, not stretched: y in [16,32) is row 1. A proportional mapping
+    // (rel_y*visible_rows/drawable_h) would have put this click on row 0 — the
+    // off-by-one-row bug this guards against.
+    try std.testing.expectEqual(@as(c_int, 1), gridCellAt(0, 16, 200, 100, cw, ch, 30, 20).?.row);
+    try std.testing.expectEqual(@as(c_int, 0), gridCellAt(0, 15, 200, 100, cw, ch, 30, 20).?.row);
+
+    // Past the last visible cell clamps to the last drawn row/col, never beyond.
+    const far = gridCellAt(9999, 9999, 200, 100, cw, ch, 30, 20).?;
+    try std.testing.expectEqual(@as(c_int, 5), far.row);
+    try std.testing.expectEqual(@as(c_int, 15), far.col);
+
+    // Degenerate inputs are rejected.
+    try std.testing.expect(gridCellAt(-1, 0, 200, 100, cw, ch, 30, 20) == null);
+    try std.testing.expect(gridCellAt(0, 0, 200, 100, 0, ch, 30, 20) == null);
 }

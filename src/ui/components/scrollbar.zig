@@ -725,24 +725,31 @@ test "state fades in, waits, and fades out with auto-hide timing" {
     var state: State = .{};
     const t0: i64 = 100;
 
+    // markDrawn() after each update mirrors the render loop clearing the
+    // first-frame guard once it has drawn the post-transition frame; without it
+    // the guard stays armed and wantsFrame never returns false.
     state.noteActivity(t0);
     try std.testing.expect(state.wantsFrame(t0));
 
     state.update(t0 + fade_in_duration_ms);
+    state.markDrawn();
     try std.testing.expectApproxEqAbs(@as(f32, 1.0), state.alpha, 0.001);
     try std.testing.expect(state.wantsFrame(t0 + fade_in_duration_ms));
 
     const before_hide = t0 + idle_hide_delay_ms - 1;
     state.update(before_hide);
+    state.markDrawn();
     try std.testing.expect(state.alpha > 0.9);
     try std.testing.expect(state.wantsFrame(before_hide));
 
     const fade_start = t0 + idle_hide_delay_ms + 1;
     state.update(fade_start);
+    state.markDrawn();
     try std.testing.expect(state.phase == .fading_out);
 
     const hidden_at = fade_start + fade_out_duration_ms + 1;
     state.update(hidden_at);
+    state.markDrawn();
     try std.testing.expectApproxEqAbs(@as(f32, 0.0), state.alpha, 0.001);
     try std.testing.expect(!state.wantsFrame(hidden_at));
 }
