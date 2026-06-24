@@ -19,3 +19,6 @@ zig-out/
 .DS_Store
 
 .tmp/
+
+# git worktrees created by wkt-add live here; never commit them
+.claude/worktrees/
