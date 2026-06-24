@@ -179,3 +179,48 @@ pub fn freePersist(allocator: std.mem.Allocator, p: Persist) void {
     allocator.free(p.session_name);
     allocator.free(p.conf_path);
 }
+
+/// Scroll a persistent session's history via the tmux control socket.
+///
+/// Under persistence the shell runs full-screen *inside* tmux, so scrolled-off
+/// lines live in tmux's 50k history buffer, not Architect's ghostty-vt
+/// scrollback — the wheel handler has nothing of its own to scroll. So drive
+/// tmux copy-mode out-of-band: `copy-mode -e` enters it (idempotent; the `-e`
+/// flag auto-exits when scrolled back to the bottom) and `send-keys -X -N <n>
+/// scroll-{up,down}` moves the view. One combined tmux invocation per call.
+/// Best-effort: a missing tmux or a failed call is a silent no-op, never an
+/// error surfaced to the UI.
+///
+/// ponytail: spawnAndWait blocks the caller ~5-10ms per wheel tick — fine at
+/// mouse-wheel cadence; if trackpad momentum feels laggy, coalesce ticks or
+/// detach the spawn (double-fork). Also: while scrolled up the pane sits in tmux
+/// copy-mode, so keystrokes are captured until you scroll back to the bottom.
+pub fn scrollHistory(allocator: std.mem.Allocator, slot_index: usize, lines: u16, up: bool) void {
+    if (!persistEnabled()) return;
+    if (lines == 0) return;
+
+    const tmux_path = findOnPath(allocator, "tmux") orelse return;
+    defer allocator.free(tmux_path);
+
+    const dir = runtimeDir();
+    const socket_path = allocZ(allocator, "{s}/architect-tmux.sock", .{dir}) catch return;
+    defer allocator.free(socket_path);
+    const target = allocZ(allocator, "architect-{d}", .{slot_index}) catch return;
+    defer allocator.free(target);
+
+    var count_buf: [8]u8 = undefined;
+    const count = std.fmt.bufPrint(&count_buf, "{d}", .{lines}) catch return;
+    const scroll_cmd: []const u8 = if (up) "scroll-up" else "scroll-down";
+
+    var child = std.process.Child.init(&[_][]const u8{
+        tmux_path,   "-S",   socket_path,
+        "copy-mode", "-e",   "-t",
+        target,      ";",    "send-keys",
+        "-t",        target, "-X",
+        "-N",        count,  scroll_cmd,
+    }, allocator);
+    child.stdin_behavior = .Ignore;
+    child.stdout_behavior = .Ignore;
+    child.stderr_behavior = .Ignore;
+    _ = child.spawnAndWait() catch return;
+}

@@ -79,6 +79,10 @@ var next_session_id = std.atomic.Value(usize).init(0);
 
 pub const SessionState = struct {
     slot_index: usize,
+    /// True when this shell was wrapped in a tmux session (ARCHITECT_PERSIST_SESSIONS
+    /// + tmux present). tmux then owns the scrollback, so wheel-scroll is routed to
+    /// tmux copy-mode instead of the (empty) ghostty-vt scrollback. See tmux.scrollHistory.
+    tmux_backed: bool = false,
     id: usize,
     shell: ?shell_mod.Shell,
     terminal: ?ghostty_vt.Terminal,
@@ -218,6 +222,7 @@ pub const SessionState = struct {
         // own copy-on-write copy of these strings, so freeing here is safe.
         const persist = tmux.buildPersist(self.allocator, self.slot_index);
         defer if (persist) |p| tmux.freePersist(self.allocator, p);
+        self.tmux_backed = persist != null;
 
         const shell = try shell_mod.Shell.spawn(
             self.shell_path,

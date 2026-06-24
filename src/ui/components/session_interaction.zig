@@ -7,6 +7,7 @@ const geom = @import("../../geom.zig");
 const renderer_mod = @import("../../render/renderer.zig");
 const dpi = @import("../../dpi.zig");
 const session_state = @import("../../session/state.zig");
+const tmux = @import("../../tmux.zig");
 const url_matcher = @import("../../url_matcher.zig");
 const path_matcher = @import("../../path_matcher.zig");
 const font_mod = @import("../../font.zig");
@@ -514,9 +515,17 @@ pub const SessionInteractionComponent = struct {
                         }
 
                         if (!forwarded) {
-                            scrollSession(session, view, scroll_delta, host.now_ms);
-                            if (event.wheel.which == c.SDL_TOUCH_MOUSEID) {
-                                view.scroll_inertia_allowed = false;
+                            if (session.tmux_backed) {
+                                // tmux owns the scrollback (the shell runs inside it), so
+                                // ghostty-vt's scrollback is empty — drive tmux copy-mode
+                                // out-of-band. Works the same in grid and focus view.
+                                const lines: u16 = @intCast(@min(@abs(scroll_delta), 100));
+                                tmux.scrollHistory(self.allocator, session.slot_index, lines, scroll_delta < 0);
+                            } else {
+                                scrollSession(session, view, scroll_delta, host.now_ms);
+                                if (event.wheel.which == c.SDL_TOUCH_MOUSEID) {
+                                    view.scroll_inertia_allowed = false;
+                                }
                             }
                         }
                     }
