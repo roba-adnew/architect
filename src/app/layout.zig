@@ -117,10 +117,25 @@ pub fn calculateTerminalSize(font: *const font_mod.Font, window_width: c_int, wi
     };
 }
 
-pub fn calculateGridCellTerminalSize(font: *const font_mod.Font, window_width: c_int, window_height: c_int, grid_font_scale: f32, grid_cols: usize, grid_rows: usize, ui_scale: f32) TerminalSize {
-    const cell_width = @divFloor(window_width, @as(c_int, @intCast(grid_cols)));
-    const cell_height = @divFloor(window_height, @as(c_int, @intCast(grid_rows)));
-    return calculateTerminalSize(font, cell_width, cell_height, grid_font_scale, ui_scale);
+/// Terminal cell-grid that fits `window_width × window_height` for an EXPLICIT
+/// cell size in px. Mirrors the renderer's fit math (drawable = area − padding,
+/// then floor-divide by the cell) so the PTY is sized to the exact cols/rows the
+/// renderer draws — no clipped status line, no empty gap. Used for grid tiles,
+/// where the cell is the grid font's native cell (rendered at scale 1.0).
+fn terminalSizeForCell(window_width: c_int, window_height: c_int, cell_w: c_int, cell_h: c_int, ui_scale: f32) TerminalSize {
+    const padding = dpi.scale(renderer_mod.terminal_padding, ui_scale) * 2;
+    const usable_w = @max(0, window_width - padding);
+    const usable_h = @max(0, window_height - padding);
+    const cw = @max(1, cell_w);
+    const ch = @max(1, cell_h);
+    const cols = @max(1, @divFloor(usable_w, cw));
+    const rows = @max(1, @divFloor(usable_h, ch));
+    return .{
+        .cols = @intCast(cols),
+        .rows = @intCast(rows),
+        .width_px = @intCast(cols * cw),
+        .height_px = @intCast(rows * ch),
+    };
 }
 
 pub const Sizes = struct {
@@ -133,21 +148,27 @@ pub const Sizes = struct {
 /// sessions stay at grid size permanently, so the grid dims must be stable).
 /// `full_window_height` is the raw render height (the focused session uses the
 /// whole window when at full size).
+///
+/// `grid_cell_w`/`grid_cell_h` are the grid font's native cell size in px — the
+/// SAME cell the renderer draws grid tiles with (at scale 1.0). Sizing the PTY
+/// from the actual grid cell (instead of base-font × a scale factor) keeps the
+/// PTY cols/rows in lockstep with what the renderer fits, so grid tiles never
+/// clip the status line / right edge.
 pub fn calculateTerminalSizes(
     font: *const font_mod.Font,
     window_width: c_int,
     grid_window_height: c_int,
     full_window_height: c_int,
-    grid_font_scale: f32,
+    grid_cell_w: c_int,
+    grid_cell_h: c_int,
     grid_cols: usize,
     grid_rows: usize,
     ui_scale: f32,
 ) Sizes {
-    const grid_dim = @max(grid_cols, grid_rows);
-    const base_grid_scale: f32 = 1.0 / @as(f32, @floatFromInt(grid_dim));
-    const effective_scale: f32 = base_grid_scale * grid_font_scale;
+    const tile_w = @divFloor(window_width, @as(c_int, @intCast(grid_cols)));
+    const tile_h = @divFloor(grid_window_height, @as(c_int, @intCast(grid_rows)));
     return .{
-        .grid = calculateGridCellTerminalSize(font, window_width, grid_window_height, effective_scale, grid_cols, grid_rows, ui_scale),
+        .grid = terminalSizeForCell(tile_w, tile_h, grid_cell_w, grid_cell_h, ui_scale),
         .full = calculateTerminalSize(font, window_width, full_window_height, 1.0, ui_scale),
     };
 }
@@ -266,17 +287,19 @@ fn sendInBandSizeReport(shell: *shell_mod.Shell, size: pty_mod.winsize) void {
     };
 }
 
-test "calculateTerminalSizes returns smaller grid than full and shrinks grid further when font scale shrinks" {
+test "calculateTerminalSizes returns smaller grid than full and shrinks grid further when the grid cell grows" {
     var font: font_mod.Font = undefined;
     font.cell_width = 10;
     font.cell_height = 20;
 
-    const normal = calculateTerminalSizes(&font, 1200, 800, 800, 1.0, 2, 1, 1.0);
-    const enlarged = calculateTerminalSizes(&font, 1200, 800, 800, 2.0, 2, 1, 1.0);
+    // grid cell == base cell, then a larger grid cell (fewer cols fit per tile).
+    const normal = calculateTerminalSizes(&font, 1200, 800, 800, 10, 20, 2, 1, 1.0);
+    const bigger_cell = calculateTerminalSizes(&font, 1200, 800, 800, 20, 40, 2, 1, 1.0);
 
     try std.testing.expect(normal.grid.cols < normal.full.cols);
-    try std.testing.expect(enlarged.grid.cols < normal.grid.cols);
-    try std.testing.expectEqual(normal.full, enlarged.full);
+    try std.testing.expect(bigger_cell.grid.cols < normal.grid.cols);
+    // Full size is driven by the base font, not the grid cell.
+    try std.testing.expectEqual(normal.full, bigger_cell.full);
 }
 
 test "calculateTerminalSizes grid dims stay stable when only full height changes" {
@@ -287,8 +310,8 @@ test "calculateTerminalSizes grid dims stay stable when only full height changes
     // grid_window_height held constant; full_window_height varies (the typical
     // case across view-mode toggles where the CWD-bar reservation only changes
     // when the actual grid layout changes).
-    const a = calculateTerminalSizes(&font, 1200, 700, 800, 1.0, 2, 1, 1.0);
-    const b = calculateTerminalSizes(&font, 1200, 700, 750, 1.0, 2, 1, 1.0);
+    const a = calculateTerminalSizes(&font, 1200, 700, 800, 10, 20, 2, 1, 1.0);
+    const b = calculateTerminalSizes(&font, 1200, 700, 750, 10, 20, 2, 1, 1.0);
     try std.testing.expectEqual(a.grid, b.grid);
 }
 

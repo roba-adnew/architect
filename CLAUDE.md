@@ -234,6 +234,7 @@ The `<= len` pattern is only correct when `pos` represents a position *after* pr
 - Terminal cwd persistence is currently macOS-only; other platforms skip saving/restoring terminals to avoid stale directories until cross-platform cwd tracking is implemented.
 - xev process watchers keep a pointer to the provided userdata; if you reuse a shared struct for multiple spawns, a late callback can read updated fields and wrongly mark a new session dead. Allocate a per-watcher context, free it on teardown or after the callback, and bump a generation counter on spawn/despawn to ignore stale events.
 - Restart buttons should only render when a session is both `spawned` and `dead`; broader checks can surface controls for never-spawned slots.
+- Grid PTY sizing and grid rendering must use the SAME cell. `layout.calculateTerminalSizes` takes `grid_cell_w`/`grid_cell_h` (the grid font's native cell, the same one the renderer draws at `grid_render_scale = 1.0`) — do not size the grid PTY from `base_font.cell × scale_factor`, or the PTY gets more rows/cols than the renderer fits and grid tiles clip the status line / right edge. Pass `grid_font.cell_width`/`grid_font.cell_height` through `applyTerminalLayout*`/`computeTerminalSizes`.
 
 ## Claude Socket Hook
 - The app creates `${XDG_RUNTIME_DIR:-/tmp}/architect_notify_<pid>.sock` and sets `ARCHITECT_SESSION_ID`/`ARCHITECT_NOTIFY_SOCK` for each shell.
