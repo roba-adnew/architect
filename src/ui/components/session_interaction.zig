@@ -191,7 +191,7 @@ pub const SessionInteractionComponent = struct {
                     // the pane. A single click on the already-focused pane is a
                     // no-op. Uses SDL's native click counter, which respects the
                     // OS double-click speed.
-                    switch (gridClickOutcome(event.button.clicks, clicked_session, host.focused_session)) {
+                    switch (gridClickOutcome(event.button.clicks, clicked_session, host.focused_session, host.grid_cols * host.grid_rows)) {
                         .none => {},
                         .select => actions.append(.{ .SelectGridSession = clicked_session }) catch |err| {
                             log.warn("failed to queue select action for session {d}: {}", .{ clicked_session, err });
@@ -740,10 +740,13 @@ const GridClickOutcome = enum { none, select, focus };
 /// Decide what a left mouse-button-down in grid mode should do. A single click
 /// on a pane other than the focused one moves the selection/focus highlight
 /// (handled as `SelectGridSession`: no spawn, no zoom). A double-click focuses
-/// (zooms) the pane (`FocusSession`). A single click on the already-focused
-/// pane does nothing.
-fn gridClickOutcome(clicks: u8, clicked_session: usize, focused_session: usize) GridClickOutcome {
-    if (clicks >= 2) return .focus;
+/// (zooms) the pane (`FocusSession`), but only when the grid holds more than one
+/// pane — with a single window open there is nothing to zoom into, so the
+/// double-click is ignored (`pane_count` is grid_cols*grid_rows; hidden windows
+/// are pulled out of the grid so they don't count). A single click on the
+/// already-focused pane does nothing.
+fn gridClickOutcome(clicks: u8, clicked_session: usize, focused_session: usize, pane_count: usize) GridClickOutcome {
+    if (clicks >= 2 and pane_count > 1) return .focus;
     if (clicked_session == focused_session) return .none;
     return .select;
 }
@@ -1492,18 +1495,25 @@ test "nav_wave_amplitude is smaller than wave_amplitude" {
 
 test "gridClickOutcome: single click selects a different pane, no-ops the focused one" {
     // Single click on a different pane -> move the highlight (select).
-    try testing.expectEqual(GridClickOutcome.select, gridClickOutcome(1, 3, 0));
+    try testing.expectEqual(GridClickOutcome.select, gridClickOutcome(1, 3, 0, 4));
     // Single click on the already-focused pane -> nothing (no spawn, no zoom).
-    try testing.expectEqual(GridClickOutcome.none, gridClickOutcome(1, 2, 2));
+    try testing.expectEqual(GridClickOutcome.none, gridClickOutcome(1, 2, 2, 4));
 }
 
 test "gridClickOutcome: double-click focuses (zooms) regardless of current focus" {
     // Double-click on a different pane -> zoom it.
-    try testing.expectEqual(GridClickOutcome.focus, gridClickOutcome(2, 3, 0));
+    try testing.expectEqual(GridClickOutcome.focus, gridClickOutcome(2, 3, 0, 4));
     // Double-click on the already-focused pane -> still zoom (expand it).
-    try testing.expectEqual(GridClickOutcome.focus, gridClickOutcome(2, 1, 1));
+    try testing.expectEqual(GridClickOutcome.focus, gridClickOutcome(2, 1, 1, 4));
     // Triple-click (clicks > 2) still resolves to focus.
-    try testing.expectEqual(GridClickOutcome.focus, gridClickOutcome(3, 4, 0));
+    try testing.expectEqual(GridClickOutcome.focus, gridClickOutcome(3, 4, 0, 4));
+}
+
+test "gridClickOutcome: single open window cannot be double-clicked into focus" {
+    // 1x1 grid (one window, possibly with hidden ones) -> double-click is a no-op
+    // on the focused pane, never a zoom.
+    try testing.expectEqual(GridClickOutcome.none, gridClickOutcome(2, 0, 0, 1));
+    try testing.expectEqual(GridClickOutcome.none, gridClickOutcome(3, 0, 0, 1));
 }
 
 test "cellCodepoint honors content_tag for text and non-text cells" {
