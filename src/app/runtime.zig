@@ -3476,18 +3476,22 @@ pub fn run() !void {
         const should_render = animating or any_session_dirty or ui_needs_frame or processed_event or had_notifications or had_control_requests or last_render_stale;
 
         if (should_render) {
-            // Keep grid_font sized to the grid's native cell so Grid-view text is
-            // crisp. grid_render_scale lands ~1.0 (within one size step), versus
-            // the old heavy 1/grid_dim downscale of the base font.
+            // Open grid_font at the grid's target size and render it at its native
+            // cell (grid_render_scale = 1.0). The rasterizer hints the glyph at the
+            // small point size; that's already the crisp result. The old residual
+            // scale (target/native) bilinear-blurred every glyph — invisible at large
+            // [grid] font_scale (~1.0), but ugly at small values where ±0.5pt rounding
+            // is a big fraction of a tiny font. Native render is sharp at every
+            // percentage; the tile just fits a cell more/fewer, which visible_cols/rows
+            // already clamp.
+            // ponytail: native render, no glyph scaling; trades exact tile-fit for sharpness.
             {
                 const grid_dim = @max(grid.cols, grid.rows);
                 const eff_scale = (1.0 / @as(f32, @floatFromInt(grid_dim))) * config.grid.font_scale;
-                const target_w_f = @max(1.0, @as(f32, @floatFromInt(font.cell_width)) * eff_scale);
-                const target_h_f = @max(1.0, @as(f32, @floatFromInt(font.cell_height)) * eff_scale);
                 // Estimate the grid font size directly: cell size scales ~linearly
                 // with point size, so size ~= base_size * eff_scale. Opens one font
                 // instead of probing every size (which caused a one-time hitch on
-                // the first resize). grid_render_scale below absorbs the rounding.
+                // the first resize).
                 const base_pt: f32 = @floatFromInt(layout.scaledFontSize(font_size, ui_scale));
                 const desired = std.math.clamp(@as(c_int, @intFromFloat(@round(base_pt * eff_scale))), min_grid_font_size, max_font_size);
                 if (desired != grid_font_size or shared_font_cache.generation != grid_font_generation) {
@@ -3501,9 +3505,7 @@ pub fn run() !void {
                         log.warn("failed to rebuild grid font at size {d}: {}", .{ desired, err });
                     }
                 }
-                const gfw: f32 = @floatFromInt(@max(1, grid_font.cell_width));
-                const gfh: f32 = @floatFromInt(@max(1, grid_font.cell_height));
-                grid_render_scale = @min(target_w_f / gfw, target_h_f / gfh);
+                grid_render_scale = 1.0;
             }
             if (relaunch_trace_frames > 0) {
                 log.info("frame trace before render", .{});
