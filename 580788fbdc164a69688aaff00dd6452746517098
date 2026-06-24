@@ -1,0 +1,7 @@
+Attempt 1 (this commit) FAILED — paused, not continuing now.
+
+Bug: with one window open, double-clicking a grid pane still zooms into focus mode; should be a no-op.
+
+Why this fix didn't work: gated focus on grid_cols*grid_rows > 1, assuming one window == a 1x1 grid. But the grid reserves an empty '+' spawn slot (calculateDimensions(visible_count + 1)), so one window is a 2x1 grid (capacity 2). The guard never fires.
+
+Correct approach (later): gate on the true visible-session count, not grid capacity. runtime.zig already has countVisibleSessions()/SessionState.isVisible(); plumb that onto UiHost and gate focus on count > 1. The added test is still valid.
