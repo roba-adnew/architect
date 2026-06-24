@@ -1223,8 +1223,9 @@ test "parseSpawnRequestFromValue rejects invalid shapes" {
     for (cases) |case| {
         var parsed = try std.json.parseFromSlice(std.json.Value, allocator, case, .{});
         defer parsed.deinit();
-        if (parseSpawnRequestFromValue(allocator, parsed.value)) |*request| {
-            request.deinit(allocator);
+        if (parseSpawnRequestFromValue(allocator, parsed.value)) |request| {
+            var req = request;
+            req.deinit(allocator);
             try std.testing.expect(false);
         } else |_| {}
     }

@@ -547,6 +547,31 @@ fn compactSessions(
         write_idx += 1;
     }
 
+    // Park hidden sessions at the tail of the array. Since slot_index maps directly
+    // to a grid cell, a hidden session left just after the visible block would sit
+    // in a cell the renderer skips (blank) yet still block that slot from a new
+    // terminal — making ⌘N open beyond the blanks. Pushing them to the end keeps
+    // the cells between the visible block and the tail genuinely free.
+    // ponytail: two-pointer partition over the non-visible tail; hidden order
+    // doesn't matter since reveal re-sorts by id.
+    {
+        var lo: usize = write_idx;
+        var hi: usize = sessions.len;
+        while (lo < hi) {
+            if (!sessions[lo].hidden) {
+                lo += 1;
+                continue;
+            }
+            hi -= 1;
+            if (lo == hi) break;
+            if (sessions[hi].hidden) continue;
+            std.mem.swap(*SessionState, &sessions[lo], &sessions[hi]);
+            std.mem.swap(SessionViewState, &views[lo], &views[hi]);
+            std.mem.swap(renderer_mod.RenderCache.Entry, &render_cache.entries[lo], &render_cache.entries[hi]);
+            lo += 1;
+        }
+    }
+
     // Keep visible sessions in creation (id) order so a revealed terminal slides
     // back to its original slot instead of landing at the end. ponytail: O(n^2)
     // insertion sort, fine for the handful of grid slots.
@@ -614,12 +639,15 @@ fn planExternalSpawnSlot(
     grid_rows: usize,
     focused_session: usize,
 ) ?ExternalSpawnPlan {
-    const spawned_count = countSpawnedSessions(sessions);
-    if (spawned_count >= grid_layout.max_terminals) return null;
+    // Physical array occupancy (incl. hidden) caps how many shells can exist;
+    // grid sizing below is driven by the VISIBLE count, since hidden sessions are
+    // parked off-grid by compactSessions and don't reserve a cell.
+    if (countSpawnedSessions(sessions) >= grid_layout.max_terminals) return null;
+    const visible_count = countVisibleSessions(sessions);
 
     const capacity = grid_cols * grid_rows;
-    if (spawned_count >= capacity) {
-        const new_dims = GridLayout.calculateDimensions(spawned_count + 1);
+    if (visible_count >= capacity) {
+        const new_dims = GridLayout.calculateDimensions(visible_count + 1);
         const new_capacity = new_dims.cols * new_dims.rows;
         if (new_capacity > grid_layout.max_terminals) return null;
         const slot_index = findNextFreeSlotAfter(sessions, new_capacity, focused_session) orelse return null;
@@ -1836,6 +1864,11 @@ pub fn run() !void {
     const session_interaction_component = try ui_mod.SessionInteractionComponent.init(allocator, sessions, &font);
     try ui.register(session_interaction_component.asComponent());
 
+    // Restored terminals land sequentially (visible first, hidden right after).
+    // Compact once so hidden sessions get parked off-grid, otherwise the first ⌘N
+    // after a reload would open beyond the restored hidden sessions' slots.
+    compactSessions(sessions, session_interaction_component.viewSlice(), &render_cache, &anim_state);
+
     const worktree_comp_ptr = try allocator.create(ui_mod.worktree_overlay.WorktreeOverlayComponent);
     worktree_comp_ptr.* = .{ .allocator = allocator };
     const worktree_component = ui_mod.UiComponent{
@@ -2532,13 +2565,14 @@ pub fn run() !void {
                     } else if (key == c.SDLK_N and has_gui and !has_blocking_mod and (anim_state.mode == .Full or anim_state.mode == .Grid)) {
                         if (config.ui.show_hotkey_feedback) ui.showHotkey("⌘N", now);
 
-                        // Count currently spawned sessions
-                        const spawned_count = countSpawnedSessions(sessions);
+                        // Grid sizing is driven by VISIBLE sessions; hidden ones are
+                        // parked off-grid by compactSessions and must not reserve a cell.
+                        const visible_count = countVisibleSessions(sessions);
 
                         // Check if we need to expand the grid
-                        if (grid.needsExpansion(spawned_count)) {
+                        if (grid.needsExpansion(visible_count)) {
                             // Calculate new grid dimensions
-                            const new_dims = GridLayout.calculateDimensions(spawned_count + 1);
+                            const new_dims = GridLayout.calculateDimensions(visible_count + 1);
                             if (new_dims.cols * new_dims.rows > grid_layout.max_terminals) {
                                 ui.showToast("Maximum terminals reached", now);
                                 continue;
@@ -3629,8 +3663,10 @@ fn allocZ(allocator: std.mem.Allocator, data: []const u8) ![]u8 {
 test "planExternalSpawnSlot expands a full current grid" {
     var first: SessionState = undefined;
     first.spawned = true;
+    first.hidden = false;
     var second: SessionState = undefined;
     second.spawned = false;
+    second.hidden = false;
     var sessions = [_]*SessionState{ &first, &second };
 
     const plan = planExternalSpawnSlot(&sessions, 1, 1, 0) orelse return error.TestUnexpectedResult;
@@ -3643,8 +3679,10 @@ test "planExternalSpawnSlot expands a full current grid" {
 test "planExternalSpawnSlot reuses free capacity" {
     var first: SessionState = undefined;
     first.spawned = true;
+    first.hidden = false;
     var second: SessionState = undefined;
     second.spawned = false;
+    second.hidden = false;
     var sessions = [_]*SessionState{ &first, &second };
 
     const plan = planExternalSpawnSlot(&sessions, 2, 1, 0) orelse return error.TestUnexpectedResult;
@@ -3660,10 +3698,117 @@ test "planExternalSpawnSlot reports full grid" {
     for (&storage, 0..) |*session, idx| {
         session.* = undefined;
         session.spawned = true;
+        session.hidden = false;
         sessions[idx] = session;
     }
 
     try std.testing.expect(planExternalSpawnSlot(&sessions, grid_layout.max_grid_size, grid_layout.max_grid_size, 0) == null);
+}
+
+test "planExternalSpawnSlot ignores hidden sessions when sizing the grid" {
+    // Post-compaction layout: 3 visible at the front, one free cell at slot 3, and
+    // a hidden session parked at the tail. A new terminal must fill the free cell
+    // WITHOUT expanding the grid — a hidden session must not reserve a tile.
+    var s0: SessionState = undefined;
+    s0.spawned = true;
+    s0.hidden = false;
+    var s1: SessionState = undefined;
+    s1.spawned = true;
+    s1.hidden = false;
+    var s2: SessionState = undefined;
+    s2.spawned = true;
+    s2.hidden = false;
+    var free: SessionState = undefined;
+    free.spawned = false;
+    free.hidden = false;
+    var hid: SessionState = undefined;
+    hid.spawned = true;
+    hid.hidden = true;
+    var sessions = [_]*SessionState{ &s0, &s1, &s2, &free, &hid };
+
+    const plan = planExternalSpawnSlot(&sessions, 2, 2, 0) orelse return error.TestUnexpectedResult;
+    try std.testing.expect(!plan.expands_grid);
+    try std.testing.expectEqual(@as(usize, 2), plan.cols);
+    try std.testing.expectEqual(@as(usize, 2), plan.rows);
+    try std.testing.expectEqual(@as(usize, 3), plan.slot_index);
+}
+
+test "planExternalSpawnSlot expands on the visible count, not the spawned count" {
+    // 4 visible fill a 2x2 grid; 1 hidden parked at the tail with a free cell at
+    // slot 4. ⌘N must expand to fit the 5th VISIBLE terminal (3x2) and place it in
+    // the first free cell, not skip past the hidden session.
+    var v0: SessionState = undefined;
+    v0.spawned = true;
+    v0.hidden = false;
+    var v1: SessionState = undefined;
+    v1.spawned = true;
+    v1.hidden = false;
+    var v2: SessionState = undefined;
+    v2.spawned = true;
+    v2.hidden = false;
+    var v3: SessionState = undefined;
+    v3.spawned = true;
+    v3.hidden = false;
+    var free: SessionState = undefined;
+    free.spawned = false;
+    free.hidden = false;
+    var hid: SessionState = undefined;
+    hid.spawned = true;
+    hid.hidden = true;
+    var sessions = [_]*SessionState{ &v0, &v1, &v2, &v3, &free, &hid };
+
+    const plan = planExternalSpawnSlot(&sessions, 2, 2, 0) orelse return error.TestUnexpectedResult;
+    try std.testing.expect(plan.expands_grid);
+    try std.testing.expectEqual(@as(usize, 3), plan.cols);
+    try std.testing.expectEqual(@as(usize, 2), plan.rows);
+    try std.testing.expectEqual(@as(usize, 4), plan.slot_index);
+}
+
+test "compactSessions parks hidden sessions at the tail" {
+    // 5 slots: visible(id2), hidden(id0), visible(id1), free, free. After compaction
+    // the visible sessions must pack to the front in id order and the hidden session
+    // must move to the tail, leaving the cells between them free for new terminals.
+    var s_v2: SessionState = undefined;
+    s_v2.spawned = true;
+    s_v2.hidden = false;
+    s_v2.id = 2;
+    var s_h0: SessionState = undefined;
+    s_h0.spawned = true;
+    s_h0.hidden = true;
+    s_h0.id = 0;
+    var s_v1: SessionState = undefined;
+    s_v1.spawned = true;
+    s_v1.hidden = false;
+    s_v1.id = 1;
+    var s_e3: SessionState = undefined;
+    s_e3.spawned = false;
+    s_e3.hidden = false;
+    s_e3.id = 3;
+    var s_e4: SessionState = undefined;
+    s_e4.spawned = false;
+    s_e4.hidden = false;
+    s_e4.id = 4;
+    var sessions = [_]*SessionState{ &s_v2, &s_h0, &s_v1, &s_e3, &s_e4 };
+
+    var views: [5]SessionViewState = undefined;
+    var render_cache = try renderer_mod.RenderCache.init(std.testing.allocator, 5);
+    defer render_cache.deinit();
+    var anim: AnimationState = undefined;
+    anim.focused_session = 0;
+    anim.previous_session = 0;
+
+    compactSessions(&sessions, &views, &render_cache, &anim);
+
+    // Visible sessions packed to the front in id order.
+    try std.testing.expect(sessions[0].isVisible());
+    try std.testing.expectEqual(@as(usize, 1), sessions[0].id);
+    try std.testing.expect(sessions[1].isVisible());
+    try std.testing.expectEqual(@as(usize, 2), sessions[1].id);
+    // The cell right after the visible block is genuinely free (not the hidden one).
+    try std.testing.expect(!sessions[2].spawned);
+    // The hidden session is parked at the tail, out of the grid's cell range.
+    try std.testing.expect(sessions[4].hidden and sessions[4].spawned);
+    try std.testing.expectEqual(@as(usize, 0), sessions[4].id);
 }
 
 test "agentLabel reports the detected agent name or 'none'" {

@@ -14,6 +14,7 @@ pub fn main() !void {
 }
 
 test {
+    _ = @import("app/runtime.zig");
     _ = @import("app/layout.zig");
     _ = @import("ui/components/diff_comment_layout.zig");
     _ = @import("shell.zig");
