@@ -801,7 +801,7 @@ fn handleExternalSpawnRequest(
     }
 
     const session = sessions[plan.slot_index];
-    session.ensureSpawnedWithDir(cwd_z, loop) catch |err| {
+    session.ensureSpawnedFresh(cwd_z, loop) catch |err| {
         log.warn("external spawn failed for cwd {s}: {}", .{ pending.request.cwd, err });
         completeExternalSpawnFailure(pending, .spawn_failed, "failed to spawn terminal session");
         return;
@@ -2649,7 +2649,7 @@ pub fn run() !void {
                             }
 
                             // Spawn new terminal
-                            try sessions[new_idx].ensureSpawnedWithDir(working_dir.cwd_z, &loop);
+                            try sessions[new_idx].ensureSpawnedFresh(working_dir.cwd_z, &loop);
                             session_interaction_component.setStatus(new_idx, .running);
                             session_interaction_component.setAttention(new_idx, false, now);
 
@@ -2681,7 +2681,7 @@ pub fn run() !void {
                                 var working_dir = WorkingDir.init(allocator, focused.cwd_path);
                                 defer working_dir.deinit(allocator);
 
-                                try sessions[next_free_idx].ensureSpawnedWithDir(working_dir.cwd_z, &loop);
+                                try sessions[next_free_idx].ensureSpawnedFresh(working_dir.cwd_z, &loop);
                                 session_interaction_component.setStatus(next_free_idx, .running);
                                 session_interaction_component.setAttention(next_free_idx, false, now);
 

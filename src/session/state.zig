@@ -211,6 +211,17 @@ pub const SessionState = struct {
         return self.ensureSpawnedWithDir(null, loop);
     }
 
+    /// Spawn a brand-new terminal at this slot. Like ensureSpawnedWithDir, but
+    /// first discards any stale tmux session left at this slot by a previous run.
+    /// Otherwise `tmux new-session -A` would ATTACH to that orphan and the "new"
+    /// terminal would mirror the old one. The restore path uses
+    /// ensureSpawnedWithDir directly, which deliberately reattaches.
+    pub fn ensureSpawnedFresh(self: *SessionState, working_dir: ?[:0]const u8, loop_opt: ?*xev.Loop) InitError!void {
+        if (self.spawned) return;
+        tmux.discardOrphanSession(self.allocator, self.slot_index);
+        return self.ensureSpawnedWithDir(working_dir, loop_opt);
+    }
+
     pub fn ensureSpawnedWithDir(self: *SessionState, working_dir: ?[:0]const u8, loop_opt: ?*xev.Loop) InitError!void {
         if (self.spawned) return;
 

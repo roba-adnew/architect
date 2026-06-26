@@ -343,6 +343,49 @@ pub fn panePath(allocator: std.mem.Allocator, slot_index: usize) ?[]u8 {
     return allocator.dupe(u8, path) catch null;
 }
 
+/// Discard a STALE ORPHAN tmux session for a slot before spawning a fresh
+/// terminal there — otherwise `new-session -A` would ATTACH to the orphan and
+/// the "new" terminal would mirror it. Only kills a session with ZERO attached
+/// clients: a visible terminal's session is always attached by its client, so
+/// this can never kill a live pane even if the slot bookkeeping is momentarily
+/// off. No-op if the session doesn't exist or is attached. Best-effort.
+pub fn discardOrphanSession(allocator: std.mem.Allocator, slot_index: usize) void {
+    if (!persistEnabled()) return;
+
+    const tmux_path = findOnPath(allocator, "tmux") orelse return;
+    defer allocator.free(tmux_path);
+
+    const dir = runtimeDir();
+    const socket_path = allocZ(allocator, "{s}/architect-tmux.sock", .{dir}) catch return;
+    defer allocator.free(socket_path);
+    const target = allocZ(allocator, "architect-{d}", .{slot_index}) catch return;
+    defer allocator.free(target);
+
+    // Only proceed if the session exists AND is detached (#{session_attached} == 0).
+    const probe = std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = &[_][]const u8{
+            tmux_path, "-S", socket_path, "display-message", "-p", "-t", target, "#{session_attached}",
+        },
+    }) catch return;
+    defer allocator.free(probe.stdout);
+    defer allocator.free(probe.stderr);
+    switch (probe.term) {
+        .Exited => |code| if (code != 0) return, // session doesn't exist — nothing to discard
+        else => return,
+    }
+    const attached = std.mem.trimRight(u8, probe.stdout, " \t\r\n");
+    if (!std.mem.eql(u8, attached, "0")) return; // attached (a live pane) or unknown — never kill
+
+    var child = std.process.Child.init(&[_][]const u8{
+        tmux_path, "-S", socket_path, "kill-session", "-t", target,
+    }, allocator);
+    child.stdin_behavior = .Ignore;
+    child.stdout_behavior = .Ignore;
+    child.stderr_behavior = .Ignore;
+    _ = child.spawnAndWait() catch return;
+}
+
 /// tmux's `pane_current_command` for an idle pane is the shell name (e.g. "zsh");
 /// a login shell may report with a leading '-'. Anything that isn't a known shell
 /// counts as "a command/agent is running".
