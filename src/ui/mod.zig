@@ -25,3 +25,4 @@ pub const metrics_overlay = @import("components/metrics_overlay.zig");
 pub const diff_overlay = @import("components/diff_overlay.zig");
 pub const story_overlay = @import("components/story_overlay.zig");
 pub const reader_overlay = @import("components/reader_overlay.zig");
+pub const find_bar = @import("components/find_bar.zig");

@@ -1873,6 +1873,16 @@ pub fn run() !void {
     const session_interaction_component = try ui_mod.SessionInteractionComponent.init(allocator, sessions, &font);
     try ui.register(session_interaction_component.asComponent());
 
+    // Cmd+F find-in-terminal. Shares the interaction component's per-session
+    // view states so its highlight/scroll reuses the same selection + scrollback
+    // machinery as mouse selection.
+    const find_bar_component = try ui_mod.find_bar.FindBarComponent.init(
+        allocator,
+        sessions,
+        session_interaction_component.viewSlice(),
+    );
+    try ui.register(find_bar_component.asComponent());
+
     // Restored terminals land sequentially (visible first, hidden right after).
     // Compact once so hidden sessions get parked off-grid, otherwise the first ⌘N
     // after a reload would open beyond the restored hidden sessions' slots.
