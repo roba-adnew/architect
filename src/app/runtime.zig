@@ -54,6 +54,9 @@ const active_frame_ns: i128 = 16_666_667;
 const idle_frame_ns: i128 = 50_000_000;
 const max_idle_render_gap_ns: i128 = 250_000_000;
 const foreground_process_cache_ms: i64 = 150;
+// tmux-backed sessions need a tmux subprocess to see the foreground command, so
+// refresh the focused-session cache more coarsely to bound the spawn rate (~1/s).
+const foreground_process_cache_tmux_ms: i64 = 1000;
 const Rect = app_state.Rect;
 const AnimationState = app_state.AnimationState;
 const NotificationQueue = notify.NotificationQueue;
@@ -75,14 +78,23 @@ const ForegroundProcessCache = struct {
     value: bool = false,
 
     fn get(self: *ForegroundProcessCache, now_ms: i64, focused_session: usize, sessions: []const *SessionState) bool {
+        if (focused_session >= sessions.len) return false;
         if (self.session_idx != focused_session) {
             self.session_idx = focused_session;
             self.last_check_ms = 0;
         }
+        const session = sessions[focused_session];
+        // tmux-backed: the cheap pgrp check can't see the agent (the PTY
+        // foreground is the tmux client), so use the tmux-aware check, throttled
+        // more coarsely since it spawns a subprocess.
+        const interval = if (session.tmux_backed) foreground_process_cache_tmux_ms else foreground_process_cache_ms;
         if (self.last_check_ms == 0 or now_ms < self.last_check_ms or
-            now_ms - self.last_check_ms >= foreground_process_cache_ms)
+            now_ms - self.last_check_ms >= interval)
         {
-            self.value = sessions[focused_session].hasForegroundProcess();
+            self.value = if (session.tmux_backed)
+                session.hasForegroundProcessThorough()
+            else
+                session.hasForegroundProcess();
             self.last_check_ms = now_ms;
         }
         return self.value;
