@@ -2125,6 +2125,12 @@ pub fn run() !void {
                 },
                 c.SDL_EVENT_WINDOW_FOCUS_LOST => {
                     window_focused = false;
+                    // Clear stuck modifier keys. If focus left while a modifier was
+                    // held (e.g. Cmd during Cmd+Tab), macOS delivers the key-up to
+                    // the other app, so SDL keeps reporting the modifier as held and
+                    // plain keystrokes then act like Cmd-shortcuts. Resetting the
+                    // keyboard here makes the next keystrokes start from a clean state.
+                    c.SDL_ResetKeyboard();
                     if (builtin.os.tag == .macos) {
                         if (text_input_active) {
                             platform.stopTextInput(sdl.window);

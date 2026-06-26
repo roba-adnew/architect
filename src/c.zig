@@ -58,6 +58,7 @@ pub const SDL_RegisterEvents = c_import.SDL_RegisterEvents;
 pub const SDL_Delay = c_import.SDL_Delay;
 pub const SDL_StartTextInput = c_import.SDL_StartTextInput;
 pub const SDL_StopTextInput = c_import.SDL_StopTextInput;
+pub const SDL_ResetKeyboard = c_import.SDL_ResetKeyboard;
 pub const SDL_SetHint = c_import.SDL_SetHint;
 pub const SDL_HINT_MAC_PRESS_AND_HOLD: [*:0]const u8 = c_import.SDL_HINT_MAC_PRESS_AND_HOLD;
 pub const SDL_HINT_QUIT_ON_LAST_WINDOW_CLOSE: [*:0]const u8 = c_import.SDL_HINT_QUIT_ON_LAST_WINDOW_CLOSE;
