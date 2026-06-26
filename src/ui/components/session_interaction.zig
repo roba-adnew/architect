@@ -220,6 +220,21 @@ pub const SessionInteractionComponent = struct {
 
                     if (focused.spawned and focused.terminal != null) {
                         const terminal = &focused.terminal.?;
+
+                        // Double-click in a focused pane always returns to grid,
+                        // even when the focused program (Claude/vim/pagers) has
+                        // mouse reporting on. Checked BEFORE the mouse-tracking
+                        // forward below, otherwise the program swallows the
+                        // double-click as a text selection and there's no mouse
+                        // path back to the grid. Single clicks and drags still
+                        // forward. Mirrors grid-view double-click-to-zoom.
+                        if (event.button.button == c.SDL_BUTTON_LEFT and event.button.clicks == 2) {
+                            actions.append(.RequestCollapseFocused) catch |err| {
+                                log.warn("failed to queue collapse action: {}", .{err});
+                            };
+                            return true;
+                        }
+
                         if (terminalHasMouseTracking(terminal) and !view.is_viewing_scrollback) {
                             if (sdlToMouseButton(event.button.button)) |btn| {
                                 if (fullViewCellFromMouse(mouse_x, mouse_y, host.window_w, host.window_h, self.font, host.term_cols, host.term_rows, host.ui_scale)) |cell| {
@@ -234,18 +249,6 @@ pub const SessionInteractionComponent = struct {
                                     return true;
                                 }
                             }
-                        }
-
-                        // Double-click in a focused pane returns to grid. We
-                        // only reach here when the program is NOT capturing the
-                        // mouse (the mouse-tracking branch above returned for
-                        // those), so Claude/vim/etc. keep their own click
-                        // behaviour; Cmd+Esc is the universal "back to grid".
-                        if (event.button.button == c.SDL_BUTTON_LEFT and event.button.clicks == 2) {
-                            actions.append(.RequestCollapseFocused) catch |err| {
-                                log.warn("failed to queue collapse action: {}", .{err});
-                            };
-                            return true;
                         }
 
                         if (event.button.button == c.SDL_BUTTON_LEFT) {
