@@ -234,7 +234,41 @@ pub const CwdBarComponent = struct {
 
         const text_color = c.SDL_Color{ .r = fg.r, .g = fg.g, .b = fg.b, .a = 255 };
         const hotkey_extra_padding: c_int = if (hotkey_width > 0) padding else 0;
-        const content_right_edge = bar_rect.x + bar_rect.w - hotkey_width - padding - hotkey_extra_padding;
+
+        // The terminal's name (the title the program set, e.g. Claude Code's
+        // /rename), drawn in the accent color just left of the command number.
+        // Rendered per-frame like the hotkey; only when a name is set.
+        var name_width: c_int = 0;
+        if (info.agent_name) |name_raw| {
+            var name_buf: [32]u8 = undefined;
+            const name = clampUtf8(name_raw, &name_buf);
+            if (name.len > 0) {
+                const accent = host.theme.accent;
+                const name_color = c.SDL_Color{ .r = accent.r, .g = accent.g, .b = accent.b, .a = 255 };
+                if (c.TTF_RenderText_Blended(cwd_font, name.ptr, name.len, name_color)) |surf| {
+                    defer c.SDL_DestroySurface(surf);
+                    if (c.SDL_CreateTextureFromSurface(renderer, surf)) |tex| {
+                        defer c.SDL_DestroyTexture(tex);
+                        var nw: f32 = 0;
+                        var nh: f32 = 0;
+                        _ = c.SDL_GetTextureSize(tex, &nw, &nh);
+                        name_width = @intFromFloat(nw);
+                        const name_h: c_int = @intFromFloat(nh);
+                        const name_x = bar_rect.x + bar_rect.w - hotkey_width - hotkey_extra_padding - name_width - padding;
+                        const name_y = bar_rect.y + @divFloor(bar_rect.h - name_h, 2);
+                        _ = c.SDL_RenderTexture(renderer, tex, null, &c.SDL_FRect{
+                            .x = @floatFromInt(name_x),
+                            .y = @floatFromInt(name_y),
+                            .w = nw,
+                            .h = nh,
+                        });
+                    }
+                }
+            }
+        }
+        const name_extra_padding: c_int = if (name_width > 0) padding else 0;
+
+        const content_right_edge = bar_rect.x + bar_rect.w - hotkey_width - padding - hotkey_extra_padding - name_width - name_extra_padding;
 
         var basename_with_slash_buf: [std.fs.max_path_bytes]u8 = undefined;
         const basename_with_slash = blk: {
@@ -417,6 +451,24 @@ pub const CwdBarComponent = struct {
         .deinit = deinitComp,
     };
 };
+
+/// Copy at most `dest.len` bytes of `s` into `dest` without splitting a UTF-8
+/// codepoint, returning the copied slice. Used to bound the name width in a tile.
+fn clampUtf8(s: []const u8, dest: []u8) []const u8 {
+    var n = @min(s.len, dest.len);
+    while (n > 0 and n < s.len and (s[n] & 0xC0) == 0x80) : (n -= 1) {}
+    @memcpy(dest[0..n], s[0..n]);
+    return dest[0..n];
+}
+
+test "clampUtf8 truncates on a codepoint boundary" {
+    var buf: [8]u8 = undefined;
+    try std.testing.expectEqualStrings("hello", clampUtf8("hello", &buf)); // fits
+    try std.testing.expectEqualStrings("abcdefgh", clampUtf8("abcdefghij", &buf)); // ASCII cut at cap
+    // "é" is 2 bytes (0xC3 0xA9); a 3-byte cap must not split the 2nd "é".
+    var small: [3]u8 = undefined;
+    try std.testing.expectEqualStrings("é", clampUtf8("éé", &small)); // 4 bytes -> keep first é (2 bytes)
+}
 
 fn renderFadeGradient(renderer: *c.SDL_Renderer, bar_rect: Rect, is_left: bool, fade_width: c_int, padding: c_int, theme: *const colors.Theme) void {
     const sel = theme.selection;
