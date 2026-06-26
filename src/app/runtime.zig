@@ -92,7 +92,10 @@ const ForegroundProcessCache = struct {
 fn countForegroundProcesses(sessions: []const *SessionState) usize {
     var total: usize = 0;
     for (sessions) |session| {
-        if (session.hasForegroundProcess()) {
+        // Quit-path check: tmux-aware, so a running agent inside a tmux pane is
+        // seen even though the PTY foreground is the tmux client. The per-frame
+        // status path still uses the cheap pgrp-based hasForegroundProcess().
+        if (session.hasForegroundProcessForQuit()) {
             total += 1;
         }
     }

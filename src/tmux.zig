@@ -264,3 +264,61 @@ pub fn cancelCopyMode(allocator: std.mem.Allocator, slot_index: usize) void {
     child.stderr_behavior = .Ignore;
     _ = child.spawnAndWait() catch return;
 }
+
+/// Whether the persistent session's tmux pane is running a real command (an
+/// agent/program), not just an idle shell. The quit-confirmation check can't see
+/// this through Architect's PTY foreground pgrp — for a tmux-backed pane that's
+/// always the tmux client, never the agent — so it asks tmux directly via
+/// `#{pane_current_command}`. Best-effort: returns false if tmux can't be queried.
+pub fn paneHasForegroundCommand(allocator: std.mem.Allocator, slot_index: usize) bool {
+    if (!persistEnabled()) return false;
+
+    const tmux_path = findOnPath(allocator, "tmux") orelse return false;
+    defer allocator.free(tmux_path);
+
+    const dir = runtimeDir();
+    const socket_path = allocZ(allocator, "{s}/architect-tmux.sock", .{dir}) catch return false;
+    defer allocator.free(socket_path);
+    const target = allocZ(allocator, "architect-{d}", .{slot_index}) catch return false;
+    defer allocator.free(target);
+
+    const result = std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = &[_][]const u8{
+            tmux_path, "-S", socket_path, "display-message", "-p", "-t", target, "#{pane_current_command}",
+        },
+    }) catch return false;
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+    switch (result.term) {
+        .Exited => |code| if (code != 0) return false,
+        else => return false,
+    }
+
+    const cmd = std.mem.trim(u8, result.stdout, " \t\r\n");
+    if (cmd.len == 0) return false; // tmux returned nothing — don't false-positive
+    return !isShellCommand(cmd);
+}
+
+/// tmux's `pane_current_command` for an idle pane is the shell name (e.g. "zsh");
+/// a login shell may report with a leading '-'. Anything that isn't a known shell
+/// counts as "a command/agent is running".
+fn isShellCommand(cmd: []const u8) bool {
+    const name = if (cmd.len > 0 and cmd[0] == '-') cmd[1..] else cmd;
+    const shells = [_][]const u8{ "zsh", "bash", "sh", "fish", "dash", "tcsh", "csh", "ksh" };
+    for (shells) |s| {
+        if (std.mem.eql(u8, name, s)) return true;
+    }
+    return false;
+}
+
+test "isShellCommand: shells vs running commands" {
+    try std.testing.expect(isShellCommand("zsh"));
+    try std.testing.expect(isShellCommand("-zsh")); // login shell
+    try std.testing.expect(isShellCommand("bash"));
+    try std.testing.expect(!isShellCommand("claude"));
+    try std.testing.expect(!isShellCommand("node"));
+    try std.testing.expect(!isShellCommand("vim"));
+    try std.testing.expect(!isShellCommand("")); // empty -> treat as no shell match
+}

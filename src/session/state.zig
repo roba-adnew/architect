@@ -795,6 +795,19 @@ pub const SessionState = struct {
         return fg_pgrp != shell.child_pid;
     }
 
+    /// Like `hasForegroundProcess`, but correct for tmux-backed sessions. For
+    /// those the PTY foreground is always the tmux client, so the pgrp check
+    /// never sees the agent; ask tmux what's actually running in the pane
+    /// instead. Spawns a tmux subprocess, so this is for the quit-confirmation
+    /// path, NOT the per-frame status path.
+    pub fn hasForegroundProcessForQuit(self: *const SessionState) bool {
+        if (!self.spawned or self.dead) return false;
+        if (self.tmux_backed) {
+            return tmux.paneHasForegroundCommand(self.allocator, self.slot_index);
+        }
+        return self.hasForegroundProcess();
+    }
+
     pub fn shellPid(self: *const SessionState) ?posix.pid_t {
         if (!self.spawned or self.dead) return null;
         const shell = self.shell orelse return null;
