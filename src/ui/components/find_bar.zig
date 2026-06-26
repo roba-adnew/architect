@@ -157,6 +157,18 @@ pub const FindBarComponent = struct {
                 self.first_frame.markTransition();
                 return true;
             },
+            c.SDL_EVENT_MOUSE_BUTTON_DOWN => {
+                if (!self.open) return false;
+                // Click outside the bar dismisses it. Consume the click either way
+                // so it doesn't also act on the terminal (closing scrolls back to
+                // the live prompt, which would move what's under the cursor).
+                const mx: c_int = @intFromFloat(event.button.x);
+                const my: c_int = @intFromFloat(event.button.y);
+                const r = self.barRect(host);
+                const inside = mx >= r.x and mx < r.x + r.w and my >= r.y and my < r.y + r.h;
+                if (!inside) self.close();
+                return true;
+            },
             else => {},
         }
         return false;
@@ -317,14 +329,18 @@ pub const FindBarComponent = struct {
         return self.open or self.first_frame.wantsFrame();
     }
 
-    /// Top-right search bar rect, sized to match the reader/story search bars.
+    /// Search bar rect: top-right, but dropped BELOW the top-right indicator
+    /// pills (which live at y=20, height=40) so the bar never overlaps or
+    /// z-fights with them.
     fn barRect(_: *FindBarComponent, host: *const types.UiHost) geom.Rect {
         const margin = dpi.scale(12, host.ui_scale);
         const h = dpi.scale(30, host.ui_scale);
+        // Clear the pill row: pills start at y=20 and are 40 tall, plus a gap.
+        const top = dpi.scale(20 + 40 + 8, host.ui_scale);
         const want_w = dpi.scale(320, host.ui_scale);
         const max_w = host.window_w - margin * 2;
         const w = @min(want_w, @max(max_w, dpi.scale(120, host.ui_scale)));
-        return .{ .x = host.window_w - w - margin, .y = margin, .w = w, .h = h };
+        return .{ .x = host.window_w - w - margin, .y = top, .w = w, .h = h };
     }
 
     fn render(self_ptr: *anyopaque, host: *const types.UiHost, renderer: *c.SDL_Renderer, assets: *types.UiAssets) void {
