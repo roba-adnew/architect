@@ -485,7 +485,13 @@ pub const SessionInteractionComponent = struct {
                     if (scroll_delta != 0) {
                         const terminal_opt = session.terminal;
                         const should_forward = blk: {
-                            if (host.view_mode != .Full) break :blk false;
+                            // Forward the wheel to a mouse-tracking program (Claude,
+                            // vim, pagers) so it scrolls ITS own view — in grid as
+                            // well as full. Previously grid refused to forward and
+                            // fell through to tmux copy-mode, which is empty for a
+                            // full-screen (alternate-screen) app, so scrolling a
+                            // Claude tile in grid showed "0/0" while focus worked.
+                            if (host.view_mode != .Full and host.view_mode != .Grid) break :blk false;
                             if (view.is_viewing_scrollback) break :blk false;
                             const terminal = terminal_opt orelse break :blk false;
                             const mouse_tracking = terminal.modes.get(.mouse_event_normal) or
@@ -498,7 +504,15 @@ pub const SessionInteractionComponent = struct {
                         var forwarded = false;
                         if (should_forward) {
                             if (terminal_opt) |terminal| {
-                                if (fullViewCellFromMouse(mouse_x, mouse_y, host.window_w, host.window_h, self.font, host.term_cols, host.term_rows, host.ui_scale)) |cell| {
+                                // In grid view the pane is a tile, so map the mouse
+                                // to that tile's cell; in full view use the whole
+                                // window. Both yield the pane-local (col,row) the
+                                // mouse-scroll encoding needs.
+                                const cell_opt = if (host.view_mode == .Grid)
+                                    gridScrollCellFromMouse(host, mouse_x, mouse_y, session_idx, terminal.cols, terminal.rows)
+                                else
+                                    fullViewCellFromMouse(mouse_x, mouse_y, host.window_w, host.window_h, self.font, host.term_cols, host.term_rows, host.ui_scale);
+                                if (cell_opt) |cell| {
                                     forwarded = true;
                                     const sgr_format = terminal.modes.get(.mouse_format_sgr);
                                     const direction: input.MouseScrollDirection = if (scroll_delta < 0) .up else .down;
@@ -973,6 +987,43 @@ fn gridCellAt(rel_x: c_int, rel_y: c_int, drawable_w: c_int, drawable_h: c_int, 
         .visible_cols = visible_cols,
         .visible_rows = visible_rows,
     };
+}
+
+/// Map a grid-view mouse position to the (col,row) cell inside the hovered tile,
+/// for forwarding a wheel scroll to a mouse-tracking program so it scrolls its
+/// own view (the grid analogue of fullViewCellFromMouse). Geometry mirrors
+/// gridViewHitFromMouse / renderer.renderSessionContent (same padding + cwd-bar
+/// reserved strip + native grid cell size).
+fn gridScrollCellFromMouse(
+    host: *const types.UiHost,
+    mouse_x: c_int,
+    mouse_y: c_int,
+    session_idx: usize,
+    term_cols: u16,
+    term_rows: u16,
+) ?CellPosition {
+    if (host.grid_cols == 0) return null;
+    if (host.cell_w <= 0 or host.cell_h <= 0) return null;
+    if (host.grid_cell_w <= 0 or host.grid_cell_h <= 0) return null;
+    if (term_cols == 0 or term_rows == 0) return null;
+
+    const gc = session_idx % host.grid_cols;
+    const gr = session_idx / host.grid_cols;
+
+    const padding = dpi.scale(renderer_mod.terminal_padding, host.ui_scale);
+    const origin_x = @as(c_int, @intCast(gc)) * host.cell_w + padding;
+    const origin_y = @as(c_int, @intCast(gr)) * host.cell_h + padding;
+    const grid_reserved_h: c_int = if (host.cell_h >= cwd_bar_metrics.minCellHeight(host.ui_scale, renderer_mod.grid_border_thickness))
+        cwd_bar_metrics.reservedHeight(host.ui_scale, renderer_mod.grid_border_thickness)
+    else
+        0;
+    const drawable_w = host.cell_w - padding * 2;
+    const drawable_h = host.cell_h - padding * 2 - grid_reserved_h;
+    if (drawable_w <= 0 or drawable_h <= 0) return null;
+    if (mouse_x < origin_x or mouse_y < origin_y) return null;
+
+    const hit = gridCellAt(mouse_x - origin_x, mouse_y - origin_y, drawable_w, drawable_h, host.grid_cell_w, host.grid_cell_h, @intCast(term_cols), @intCast(term_rows)) orelse return null;
+    return .{ .col = @intCast(hit.col), .row = @intCast(hit.row) };
 }
 
 fn isWordCharacter(codepoint: u21) bool {
