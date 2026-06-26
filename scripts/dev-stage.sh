@@ -1,22 +1,23 @@
 #!/usr/bin/env bash
-# Build Architect from the CURRENT worktree and STAGE the fresh bundle so it
-# applies on your NEXT quit + reopen of the daily /Applications app — no forced
-# restart, no killing live agents mid-turn.
+# Build Architect from the CURRENT worktree and swap the fresh bundle into
+# /Applications so it takes effect on your NEXT quit + reopen of the daily app —
+# no forced restart, no killing live agents mid-turn.
 #
-# Why staged-then-swap-on-quit instead of a plain in-place swap:
-# a running macOS app is code-signed and its mach-o pages are mmap'd. If you
-# overwrite its bundle while it's running, the kernel faults a page that no
-# longer matches the cached signature and SIGKILLs the process
-# ("Killed: 9" / cs_invalid_page). So the swap MUST happen while the app is not
-# running. We build into a staging dir on the SAME volume as /Applications, then
-# a tiny detached watcher waits for the running app to exit and atomically
-# renames the staged bundle into place. This is the same shape Sparkle (the
-# standard macOS updater) uses.
+# How the swap is safe while the app is running: we do NOT overwrite the bundle
+# in place (that would change the running mach-o's on-disk pages and the kernel
+# would SIGKILL it on a signature page fault — "Killed: 9" / cs_invalid_page).
+# Instead we ATOMIC-RENAME: build into a staging dir on the same volume, rename
+# the old bundle aside, rename the new one into place. The running process keeps
+# its original (renamed-then-unlinked) inode, so its pages never change and it
+# is never killed; the NEXT launch picks up the new bundle.
+#
+# (An earlier version deferred the swap to a quit-watcher, but that raced the
+# relaunch and often failed to apply — the immediate atomic swap is reliable.)
 #
 # Usage:
-#   scripts/dev-stage.sh            build + stage + arm swap-on-quit watcher
-#   scripts/dev-stage.sh --dry-run  build + stage into a temp dir, no swap/arm
-#   scripts/dev-stage.sh --debug    stage a Debug build instead of ReleaseFast
+#   scripts/dev-stage.sh            build + swap (applies on next reopen)
+#   scripts/dev-stage.sh --dry-run  build + stage into a temp dir, no swap
+#   scripts/dev-stage.sh --debug    build a Debug build instead of ReleaseFast
 set -euo pipefail
 
 dry_run=false
@@ -49,12 +50,10 @@ fi
 . "$ROOT/scripts/dev-build-env.sh"
 
 APP="/Applications/Architect.app"
-APP_EXE="$APP/Contents/MacOS/architect"
 # Stage on the SAME volume as /Applications so the final swap is an atomic
 # rename, not a slow cross-device copy that widens the window where the app path
 # is missing. A dot-prefixed dir keeps it out of Finder/Launchpad.
 STAGE_PARENT="/Applications/.architect-staged"
-PIDFILE="${TMPDIR:-/tmp}/architect-stage-watcher.pid"
 if [ "$dry_run" = true ]; then
     STAGE_PARENT="$(mktemp -d)"
 fi
@@ -96,46 +95,14 @@ if [ "$dry_run" = true ]; then
     exit 0
 fi
 
-# Cancel any previously-armed watcher: its staged build is now stale.
-if [ -f "$PIDFILE" ]; then
-    old="$(cat "$PIDFILE" 2>/dev/null || true)"
-    if [ -n "$old" ]; then kill "$old" 2>/dev/null || true; fi
-    rm -f "$PIDFILE"
-fi
-
-# Find the running daily app by its bundle exe path. Use ps, not pgrep: pgrep
-# can fail to match the Finder-launched .app process in some shells, while ps
-# reliably lists it.
-app_pid="$(ps -Axo pid=,comm= | awk -v exe="$APP_EXE" '$2 == exe { print $1; exit }')"
-
-if [ -z "$app_pid" ]; then
-    echo "==> Daily app isn't running — applying the new build now."
-    rm -rf "$APP.prev"
-    mv "$APP" "$APP.prev" 2>/dev/null || true
-    mv "$staged" "$APP"
-    rm -rf "$APP.prev" "$STAGE_PARENT"
-    echo "==> Done. Open Architect for the new build."
-    exit 0
-fi
-
-# Arm a detached watcher: wait for THIS pid to exit (event-based, no polling),
-# then atomically swap. nohup + disown so it survives the launching shell/PTY
-# being torn down when Architect quits.
-# shellcheck disable=SC2016
-nohup bash -c '
-    set -e
-    app="$1"; staged="$2"; stage_parent="$3"; pid="$4"; pidfile="$5"
-    caffeinate -w "$pid" 2>/dev/null || true
-    sleep 1   # let the bundle fully release before renaming it out
-    rm -rf "$app.prev"
-    mv "$app" "$app.prev" 2>/dev/null || true
-    mv "$staged" "$app"
-    rm -rf "$app.prev" "$stage_parent"
-    rm -f "$pidfile"
-    osascript -e "display notification \"New build applied — reopen Architect.\" with title \"Architect\"" 2>/dev/null || true
-' _ "$APP" "$staged" "$STAGE_PARENT" "$app_pid" "$PIDFILE" >/dev/null 2>&1 &
-echo "$!" > "$PIDFILE"
-disown
-
-echo "==> Staged (watcher pid $(cat "$PIDFILE")). Your next Cmd+Q + reopen comes up on the new build."
-echo "    Cancel before restarting with:  kill \$(cat '$PIDFILE') 2>/dev/null; rm -rf '$STAGE_PARENT'"
+# Apply immediately via an atomic rename. This is safe even while Architect is
+# running: the live process keeps its old (renamed-aside, then unlinked) inode,
+# so the kernel never SIGKILLs it on a code-signature page fault, and the NEXT
+# launch picks up the new bundle. Replaces an earlier swap-on-quit watcher that
+# raced the relaunch and frequently failed to apply the build at all.
+echo "==> Applying new build to $APP (atomic swap; the running app keeps its old copy)..."
+rm -rf "$APP.prev"
+mv "$APP" "$APP.prev"
+mv "$staged" "$APP"
+rm -rf "$APP.prev" "$STAGE_PARENT"
+echo "==> Done. Your next Cmd+Q + reopen of Architect comes up on the new build."

@@ -82,13 +82,13 @@ accept losing that agent state.
 ./scripts/dev-stage.sh        # build + stage; applies on your next Cmd+Q + reopen
 ./scripts/dev-stage.sh --dry-run   # build + stage to a temp dir, no swap/arm (test)
 ```
-This builds the worktree, packages the bundle into a staging dir on the same
-volume as `/Applications`, and arms a small detached watcher that waits for the
-running app to exit and then atomically swaps the staged bundle into place. You
-keep working; your next quit + reopen comes up on the new build. A macOS app
-can't be swapped in place while running — the kernel SIGKILLs it on a
-code-signature page fault (`cs_invalid_page` / "Killed: 9") — so the swap is
-deferred to the gap while the app is closed (the same approach Sparkle uses).
+This builds the worktree and **atomic-swaps** the fresh bundle into
+`/Applications` immediately: it renames the old bundle aside and renames the new
+one into place. The swap is safe even while Architect is running because the
+live process keeps its original (renamed-then-unlinked) inode — its mach-o pages
+never change, so the kernel never SIGKILLs it on a signature page fault
+(`cs_invalid_page` / "Killed: 9") the way an in-place *overwrite* would. You keep
+working on the running copy; your next quit + reopen comes up on the new build.
 The `pushstage` shell alias backs the current branch up to your fork, then runs
 this script. Contrast with `dev-reload.sh`, which quits + relaunches immediately.
 
