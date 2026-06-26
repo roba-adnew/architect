@@ -76,10 +76,23 @@ fn allocZ(allocator: std.mem.Allocator, comptime fmt: []const u8, args: anytype)
 
 /// Resolve an executable on PATH. Caller owns the returned string.
 fn findOnPath(allocator: std.mem.Allocator, name: []const u8) ?[:0]u8 {
-    const path_env = posix.getenv("PATH") orelse return null;
+    const path_env = posix.getenv("PATH") orelse "";
     var it = std.mem.splitScalar(u8, path_env, ':');
     while (it.next()) |dir| {
         if (dir.len == 0) continue;
+        const candidate = allocZ(allocator, "{s}/{s}", .{ dir, name }) catch return null;
+        if (posix.accessZ(candidate.ptr, posix.X_OK)) |_| {
+            return candidate;
+        } else |_| {
+            allocator.free(candidate);
+        }
+    }
+    // Fallback to common install dirs. A Finder/login-item launch inherits
+    // launchd's minimal PATH (/usr/bin:/bin:/usr/sbin:/sbin), which omits
+    // Homebrew, so tmux at /opt/homebrew/bin would be missed and persistence
+    // would silently degrade to non-persistent shells. Check those dirs too.
+    const fallback_dirs = [_][]const u8{ "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin" };
+    for (fallback_dirs) |dir| {
         const candidate = allocZ(allocator, "{s}/{s}", .{ dir, name }) catch return null;
         if (posix.accessZ(candidate.ptr, posix.X_OK)) |_| {
             return candidate;
