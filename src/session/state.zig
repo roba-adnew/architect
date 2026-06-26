@@ -730,13 +730,22 @@ pub const SessionState = struct {
 
         const shell = self.shell orelse return;
 
-        const check_interval_ms: i64 = 1000;
+        // tmux-backed: the PTY child is the tmux client, whose process cwd is
+        // frozen wherever it was spawned, so getCwd reports the wrong directory.
+        // Ask tmux for the pane's real path instead. The longer, per-slot
+        // staggered interval keeps these per-session tmux subprocesses off the
+        // same frame.
+        const check_interval_ms: i64 = if (self.tmux_backed)
+            2000 + @as(i64, @intCast(self.slot_index % 8)) * 120
+        else
+            1000;
         if (current_time - self.cwd_last_check < check_interval_ms) return;
         self.cwd_last_check = current_time;
 
-        const new_path = cwd_mod.getCwd(self.allocator, shell.child_pid) catch {
-            return;
-        };
+        const new_path = if (self.tmux_backed)
+            (tmux.panePath(self.allocator, self.slot_index) orelse return)
+        else
+            (cwd_mod.getCwd(self.allocator, shell.child_pid) catch return);
 
         if (self.cwd_path) |old_path| {
             if (std.mem.eql(u8, old_path, new_path)) {

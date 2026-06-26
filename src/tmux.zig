@@ -307,6 +307,42 @@ pub fn paneHasForegroundCommand(allocator: std.mem.Allocator, slot_index: usize)
     return !isShellCommand(cmd);
 }
 
+/// The working directory of the persistent session's tmux pane — the dir the
+/// shell/agent is actually in. For a tmux-backed session the PTY child is the
+/// tmux client, whose own process cwd is frozen wherever it was spawned, so
+/// reading it (getCwd) reports the wrong directory; ask tmux for the pane path
+/// instead. Caller owns the returned slice; null if tmux can't be queried.
+pub fn panePath(allocator: std.mem.Allocator, slot_index: usize) ?[]u8 {
+    if (!persistEnabled()) return null;
+
+    const tmux_path = findOnPath(allocator, "tmux") orelse return null;
+    defer allocator.free(tmux_path);
+
+    const dir = runtimeDir();
+    const socket_path = allocZ(allocator, "{s}/architect-tmux.sock", .{dir}) catch return null;
+    defer allocator.free(socket_path);
+    const target = allocZ(allocator, "architect-{d}", .{slot_index}) catch return null;
+    defer allocator.free(target);
+
+    const result = std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = &[_][]const u8{
+            tmux_path, "-S", socket_path, "display-message", "-p", "-t", target, "#{pane_current_path}",
+        },
+    }) catch return null;
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+    switch (result.term) {
+        .Exited => |code| if (code != 0) return null,
+        else => return null,
+    }
+
+    const path = std.mem.trimRight(u8, result.stdout, " \t\r\n");
+    if (path.len == 0) return null;
+    return allocator.dupe(u8, path) catch null;
+}
+
 /// tmux's `pane_current_command` for an idle pane is the shell name (e.g. "zsh");
 /// a login shell may report with a leading '-'. Anything that isn't a known shell
 /// counts as "a command/agent is running".
