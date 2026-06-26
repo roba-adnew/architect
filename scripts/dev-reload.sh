@@ -16,6 +16,14 @@ if [[ -z "$ROOT" || ! -f "$ROOT/scripts/bundle-macos.sh" ]]; then
 fi
 cd "$ROOT"
 
+# Find the running daily app's PID. Use ps, NOT `pgrep -x architect`: a
+# Finder/`open`-launched .app is not reliably matched by pgrep's exact-name
+# match (its comm is the full bundle exe path), so pgrep silently returns
+# nothing and the live-agent guard below would no-op while the reload still
+# quits the app and kills its agents. ps lists it reliably.
+APP_EXE="/Applications/Architect.app/Contents/MacOS/architect"
+daily_pid() { ps -Axo pid=,comm= | awk -v exe="$APP_EXE" '$2 == exe { print $1; exit }'; }
+
 # Returns 0 if any descendant of pid $1 looks like a running agent CLI
 # (claude/codex/gemini) — i.e. restarting the app would kill a live agent.
 #
@@ -58,7 +66,7 @@ fi
 # (recent context appears lost). Refuse when agents are live. To test changes
 # WITHOUT touching the daily app, use scripts/dev-instance.sh (isolated).
 if [ -z "${DEV_RELOAD_FORCE:-}" ] && [ -z "${DEV_RELOAD_BUILD_ONLY:-}" ]; then
-    arch_pid="$(pgrep -x architect | head -1 || true)"
+    arch_pid="$(daily_pid)"
     if [ -n "$arch_pid" ] && reload_has_live_agents "$arch_pid"; then
         echo "REFUSING: the running Architect has live agent sessions (claude/codex/gemini)." >&2
         echo "Restarting it kills them, and a bridged resume can come back stale (lost context)." >&2
@@ -124,7 +132,7 @@ fi
 # Hand the swap+relaunch to a detached process. It outlives this shell, so the
 # new Architect comes up even if quitting the old one tears down our terminal.
 echo "==> Quitting Architect (waiting for agents to shut down + flush) and relaunching..."
-old_pid="$(pgrep -x architect | head -1 || true)"
+old_pid="$(daily_pid)"
 # Variables below are for the inner shell, not this one (intentional single quotes).
 # shellcheck disable=SC2016
 nohup bash -c '
