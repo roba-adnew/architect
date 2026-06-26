@@ -53,6 +53,8 @@ const conf_contents =
     \\set -g default-terminal "screen-256color"
     \\set -as terminal-features ",*:RGB:hyperlinks"
     \\set -g allow-passthrough on
+    \\set -g set-titles on
+    \\set -g set-titles-string "#{pane_title}"
     \\
 ;
 
@@ -130,17 +132,21 @@ fn writeConf(path: [:0]const u8) !void {
 /// these, so OSC 8 links survive without restarting the server (which would kill
 /// the agents). Best effort — on the first launch no server exists yet (no-op).
 ///
-/// We set the two relevant options directly rather than `source-file`-ing the
-/// whole conf, because the conf's `unbind-key -a` errors ("table prefix doesn't
-/// exist") on a server whose prefix table was already emptied at start, aborting
-/// the rest of the file before it reaches these lines. Keep in sync with
-/// `conf_contents`.
+/// We set the relevant options (hyperlinks, passthrough, set-titles) directly
+/// rather than `source-file`-ing the whole conf, because the conf's
+/// `unbind-key -a` errors ("table prefix doesn't exist") on a server whose
+/// prefix table was already emptied at start, aborting the rest of the file
+/// before it reaches these lines. Keep in sync with `conf_contents`.
 fn refreshRunningServer(allocator: std.mem.Allocator, tmux_path: [:0]const u8, socket_path: [:0]const u8) void {
     var child = std.process.Child.init(&[_][]const u8{
         tmux_path,       "-S",                socket_path,
         "set",           "-ag",               "terminal-features",
         ",*:hyperlinks", ";",                 "set",
         "-g",            "allow-passthrough", "on",
+        ";",             "set",               "-g",
+        "set-titles",    "on",                ";",
+        "set",           "-g",                "set-titles-string",
+        "#{pane_title}",
     }, allocator);
     child.stdin_behavior = .Ignore;
     child.stdout_behavior = .Ignore;
