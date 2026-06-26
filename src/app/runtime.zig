@@ -92,10 +92,10 @@ const ForegroundProcessCache = struct {
 fn countForegroundProcesses(sessions: []const *SessionState) usize {
     var total: usize = 0;
     for (sessions) |session| {
-        // Quit-path check: tmux-aware, so a running agent inside a tmux pane is
-        // seen even though the PTY foreground is the tmux client. The per-frame
-        // status path still uses the cheap pgrp-based hasForegroundProcess().
-        if (session.hasForegroundProcessForQuit()) {
+        // Confirmation-path check: tmux-aware, so a running agent inside a tmux
+        // pane is seen even though the PTY foreground is the tmux client. The
+        // per-frame status path still uses the cheap pgrp hasForegroundProcess().
+        if (session.hasForegroundProcessThorough()) {
             total += 1;
         }
     }
@@ -2278,7 +2278,7 @@ pub fn run() !void {
                             continue;
                         }
 
-                        if (session.hasForegroundProcess()) {
+                        if (session.hasForegroundProcessThorough()) {
                             confirm_dialog_component.show(
                                 "Delete Terminal?",
                                 "A process is running. Delete anyway?",
@@ -3206,7 +3206,7 @@ pub fn run() !void {
                 if (switch_action.session >= sessions.len) continue;
 
                 var session = sessions[switch_action.session];
-                if (session.hasForegroundProcess()) {
+                if (session.hasForegroundProcessThorough()) {
                     ui.showToast("Stop the running process first", now);
                     continue;
                 }
@@ -3232,7 +3232,7 @@ pub fn run() !void {
                 if (create_action.session >= sessions.len) continue;
                 var session = sessions[create_action.session];
 
-                if (session.hasForegroundProcess()) {
+                if (session.hasForegroundProcessThorough()) {
                     ui.showToast("Stop the running process first", now);
                     continue;
                 }
@@ -3285,7 +3285,7 @@ pub fn run() !void {
                 if (remove_action.session >= sessions.len) continue;
                 var session = sessions[remove_action.session];
 
-                if (session.hasForegroundProcess()) {
+                if (session.hasForegroundProcessThorough()) {
                     ui.showToast("Stop the running process first", now);
                     continue;
                 }
@@ -3334,7 +3334,7 @@ pub fn run() !void {
                 if (cd_action.session >= sessions.len) continue;
 
                 var session = sessions[cd_action.session];
-                if (session.hasForegroundProcess()) {
+                if (session.hasForegroundProcessThorough()) {
                     ui.showToast("Stop the running process first", now);
                     continue;
                 }
