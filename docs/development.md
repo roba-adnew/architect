@@ -76,6 +76,22 @@ agents mid-turn and a bridged `claude --resume` can come back from a stale (rewo
 transcript. Override with `DEV_RELOAD_FORCE=1 ./scripts/dev-reload.sh` only when you
 accept losing that agent state.
 
+**Stage on next quit (no forced restart).** When you want the new build but
+*don't* want to restart now (and kill live agents mid-turn), stage it instead:
+```bash
+./scripts/dev-stage.sh        # build + stage; applies on your next Cmd+Q + reopen
+./scripts/dev-stage.sh --dry-run   # build + stage to a temp dir, no swap/arm (test)
+```
+This builds the worktree, packages the bundle into a staging dir on the same
+volume as `/Applications`, and arms a small detached watcher that waits for the
+running app to exit and then atomically swaps the staged bundle into place. You
+keep working; your next quit + reopen comes up on the new build. A macOS app
+can't be swapped in place while running — the kernel SIGKILLs it on a
+code-signature page fault (`cs_invalid_page` / "Killed: 9") — so the swap is
+deferred to the gap while the app is closed (the same approach Sparkle uses).
+The `pushstage` shell alias backs the current branch up to your fork, then runs
+this script. Contrast with `dev-reload.sh`, which quits + relaunches immediately.
+
 **Isolated dev instance (preferred while agents are running).** To test source
 changes without touching the daily app at all:
 ```bash
