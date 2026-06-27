@@ -2788,6 +2788,18 @@ pub fn run() !void {
                                 try input_keys.handleKeyInput(focused, key, mod);
                             }
                         }
+                    } else if (input.jumpToBottomShortcut(key, mod)) {
+                        // Cmd+Shift+Down → send Ctrl+End so the focused TUI (e.g.
+                        // Claude Code) jumps to the bottom of its scroll. Stands in
+                        // for the physical Ctrl+End, which macOS window managers
+                        // grab as Ctrl+Fn+→. Focused live pane only.
+                        if (focused.spawned and !focused.dead) {
+                            if (config.ui.show_hotkey_feedback) ui.showHotkey("⌘⇧↓", now);
+                            session_interaction_component.resetScrollIfNeeded(anim_state.focused_session);
+                            focused.sendInput(input.CTRL_END_SEQUENCE) catch |err| {
+                                log.warn("jump-to-bottom send failed: {}", .{err});
+                            };
+                        }
                     } else if (key == c.SDLK_RETURN and (mod & c.SDL_KMOD_GUI) != 0 and anim_state.mode == .Grid) {
                         if (config.ui.show_hotkey_feedback) ui.showHotkey("⌘↵", now);
                         if (countSpawnedSessions(sessions) == 1) {

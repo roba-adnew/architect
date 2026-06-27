@@ -23,6 +23,7 @@ test {
     _ = @import("session/osc_title.zig");
     _ = @import("config.zig");
     _ = @import("ui/components/session_interaction.zig");
+    _ = @import("input/mapper.zig");
     _ = @import("ui/components/find_bar.zig");
     _ = @import("tmux.zig");
     _ = @import("ui/components/cwd_bar.zig");

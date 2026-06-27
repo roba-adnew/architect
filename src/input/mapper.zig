@@ -27,6 +27,25 @@ pub fn gridNavShortcut(key: c.SDL_Keycode, mod: c.SDL_Keymod) ?GridNavDirection 
     };
 }
 
+/// Standard xterm Ctrl+End (CSI 1;5F): modifier 5 = Ctrl, final F = End. This is
+/// what iTerm/Ghostty/kitty emit for Ctrl+End, so Claude Code's "jump to bottom"
+/// (and any TUI's scroll-to-end) responds to it.
+pub const CTRL_END_SEQUENCE = "\x1b[1;5F";
+
+/// Cmd+Shift+Down → "jump to bottom". We send CTRL_END_SEQUENCE for this combo
+/// because (a) encodeKeyWithMod maps the bare End key to Ctrl+E and drops the
+/// Ctrl modifier, so Architect never emits a real Ctrl+End, and (b) macOS window
+/// managers commonly grab the physical Ctrl+End (Ctrl+Fn+→) for window tiling.
+/// Cmd+Shift+Down is the unshifted Cmd+Down grid-nav's shifted sibling and is
+/// otherwise unbound.
+pub fn jumpToBottomShortcut(key: c.SDL_Keycode, mod: c.SDL_Keymod) bool {
+    if (key != c.SDLK_DOWN) return false;
+    if ((mod & c.SDL_KMOD_GUI) == 0) return false;
+    if ((mod & c.SDL_KMOD_SHIFT) == 0) return false;
+    if ((mod & (c.SDL_KMOD_CTRL | c.SDL_KMOD_ALT)) != 0) return false;
+    return true;
+}
+
 /// Whether a plain Esc key-up should be forwarded to the focused program. Esc
 /// is a passthrough key (Claude Code's Esc / Esc-Esc rewind, vim's Esc, ...) in
 /// both grid and full views — in grid it goes to the focused (highlighted) pane,
@@ -374,6 +393,18 @@ test "fontSizeShortcut - plus/minus variants" {
     try std.testing.expectEqual(FontSizeDirection.increase, fontSizeShortcut(c.SDLK_KP_PLUS, c.SDL_KMOD_GUI).?);
     try std.testing.expectEqual(FontSizeDirection.decrease, fontSizeShortcut(c.SDLK_KP_MINUS, c.SDL_KMOD_GUI).?);
     try std.testing.expect(fontSizeShortcut(c.SDLK_EQUALS, c.SDL_KMOD_SHIFT) == null);
+}
+
+test "jumpToBottomShortcut - cmd+shift+down only" {
+    try std.testing.expect(jumpToBottomShortcut(c.SDLK_DOWN, c.SDL_KMOD_GUI | c.SDL_KMOD_SHIFT));
+    // No shift = grid nav, not jump-to-bottom.
+    try std.testing.expect(!jumpToBottomShortcut(c.SDLK_DOWN, c.SDL_KMOD_GUI));
+    // Missing cmd, wrong key, or extra modifiers must not match.
+    try std.testing.expect(!jumpToBottomShortcut(c.SDLK_DOWN, c.SDL_KMOD_SHIFT));
+    try std.testing.expect(!jumpToBottomShortcut(c.SDLK_UP, c.SDL_KMOD_GUI | c.SDL_KMOD_SHIFT));
+    try std.testing.expect(!jumpToBottomShortcut(c.SDLK_DOWN, c.SDL_KMOD_GUI | c.SDL_KMOD_SHIFT | c.SDL_KMOD_CTRL));
+    // The sequence we emit is the standard Ctrl+End.
+    try std.testing.expectEqualSlices(u8, "\x1b[1;5F", CTRL_END_SEQUENCE);
 }
 
 test "encodeKeyWithMod - shift+tab legacy mode" {
