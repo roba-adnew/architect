@@ -92,6 +92,7 @@ Note: Runtime window position and size are saved to `persistence.toml` and take 
 
 ```toml
 [theme]
+mode = "light"          # "light" = Cacha light preset; omit/"dark" = default dark
 background = "#262624"  # Terminal background color
 foreground = "#CDD6E0"  # Default text color
 selection = "#1B2230"   # Selection highlight color
@@ -101,14 +102,23 @@ accent = "#61AFEF"      # Accent color (focused borders, UI elements)
 Colors are specified in hexadecimal format (`#RRGGBB` or `RRGGBB`).
 The configured theme colors are reused across terminal chrome and overlay surfaces, including modal panels and their input fields.
 
+#### Light mode
+
+Set `mode = "light"` to switch the defaults to a light preset matched to the
+Cacha companion app's light theme (background `#D6D6D5`, soft near-black text,
+Cacha's blue accent, and a One Light ANSI palette). `mode` only changes which
+set of *defaults* is used — any explicit `background`/`foreground`/`accent`/
+`selection` or `[theme.palette]` key still overrides the preset. Changing the
+mode takes effect on the next launch.
+
 #### Default Theme Colors
 
-| Setting | Default | Description |
-|---------|---------|-------------|
-| `background` | `#262624` | Warm dark gray background |
-| `foreground` | `#CDD6E0` | Light gray text |
-| `selection` | `#1B2230` | Darker blue for selections |
-| `accent` | `#61AFEF` | Blue accent for focus indicators |
+| Setting | Dark default (`mode` unset) | Light default (`mode = "light"`) | Description |
+|---------|---------|---------|-------------|
+| `background` | `#262624` | `#D6D6D5` | App + terminal background |
+| `foreground` | `#CDD6E0` | `#1A1A1A` | Default text color |
+| `selection` | `#1B2230` | `#BAC2CA` | Selection highlight |
+| `accent` | `#61AFEF` | `#3B82F6` | Focus indicators / UI accent |
 
 ### ANSI Palette
 
@@ -137,7 +147,7 @@ bright_cyan = "#56B6C2"
 bright_white = "#CDD6E0"
 ```
 
-Omitted colors fall back to the built-in One Dark-inspired palette.
+Omitted colors fall back to the built-in One Dark-inspired palette (or, when `mode = "light"`, the One Light palette).
 
 ### UI Configuration
 

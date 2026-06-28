@@ -16,6 +16,15 @@ pub const Color = struct {
     pub const default_accent: Color = .{ .r = 97, .g = 175, .b = 239 };
     pub const default_selection: Color = .{ .r = 27, .g = 34, .b = 48 };
 
+    // Light-mode defaults (`[theme] mode = "light"`), matched to Cacha's light
+    // theme (Color+Cacha.swift): background #D6D6D5, link/accent #3B82F6. Text is
+    // a soft near-black (#1A1A1A) — common on light terminals (Cacha itself uses
+    // pure #000000); selection is Cacha's secondary blue-gray #BAC2CA.
+    pub const default_background_light: Color = .{ .r = 214, .g = 214, .b = 213 };
+    pub const default_foreground_light: Color = .{ .r = 26, .g = 26, .b = 26 };
+    pub const default_accent_light: Color = .{ .r = 59, .g = 130, .b = 246 };
+    pub const default_selection_light: Color = .{ .r = 186, .g = 194, .b = 202 };
+
     pub fn fromHex(hex: []const u8) ?Color {
         const start: usize = if (hex.len > 0 and hex[0] == '#') 1 else 0;
         const hex_digits = hex[start..];
@@ -113,7 +122,7 @@ pub const PaletteConfig = struct {
     bright_cyan: ?[]const u8 = null,
     bright_white: ?[]const u8 = null,
 
-    pub fn getColor(self: PaletteConfig, idx: u4) Color {
+    pub fn getColor(self: PaletteConfig, idx: u4, light: bool) Color {
         const hex: ?[]const u8 = switch (idx) {
             0 => self.black,
             1 => self.red,
@@ -137,7 +146,7 @@ pub const PaletteConfig = struct {
                 if (Color.fromHex(h)) |c| return c;
             }
         }
-        return default_palette[idx];
+        return if (light) default_palette_light[idx] else default_palette[idx];
     }
 
     pub fn deinit(self: *PaletteConfig, allocator: std.mem.Allocator) void {
@@ -160,11 +169,20 @@ pub const PaletteConfig = struct {
 };
 
 pub const ThemeConfig = struct {
+    /// "light" selects the light preset (Cacha light background + One Light
+    /// palette). Unset or any other value = the dark default. Explicit color and
+    /// palette overrides below still win over whichever preset is active.
+    mode: ?[]const u8 = null,
     background: ?[]const u8 = null,
     foreground: ?[]const u8 = null,
     selection: ?[]const u8 = null,
     accent: ?[]const u8 = null,
     palette: PaletteConfig = .{},
+
+    pub fn isLight(self: ThemeConfig) bool {
+        if (self.mode) |m| return std.ascii.eqlIgnoreCase(m, "light");
+        return false;
+    }
 
     pub fn getBackground(self: ThemeConfig) Color {
         if (self.background) |hex| {
@@ -172,7 +190,7 @@ pub const ThemeConfig = struct {
                 if (Color.fromHex(hex)) |c| return c;
             }
         }
-        return Color.default_background;
+        return if (self.isLight()) Color.default_background_light else Color.default_background;
     }
 
     pub fn getForeground(self: ThemeConfig) Color {
@@ -181,7 +199,7 @@ pub const ThemeConfig = struct {
                 if (Color.fromHex(hex)) |c| return c;
             }
         }
-        return Color.default_foreground;
+        return if (self.isLight()) Color.default_foreground_light else Color.default_foreground;
     }
 
     pub fn getSelection(self: ThemeConfig) Color {
@@ -190,7 +208,7 @@ pub const ThemeConfig = struct {
                 if (Color.fromHex(hex)) |c| return c;
             }
         }
-        return Color.default_selection;
+        return if (self.isLight()) Color.default_selection_light else Color.default_selection;
     }
 
     pub fn getAccent(self: ThemeConfig) Color {
@@ -199,14 +217,15 @@ pub const ThemeConfig = struct {
                 if (Color.fromHex(hex)) |c| return c;
             }
         }
-        return Color.default_accent;
+        return if (self.isLight()) Color.default_accent_light else Color.default_accent;
     }
 
     pub fn getPaletteColor(self: ThemeConfig, idx: u4) Color {
-        return self.palette.getColor(idx);
+        return self.palette.getColor(idx, self.isLight());
     }
 
     pub fn deinit(self: *ThemeConfig, allocator: std.mem.Allocator) void {
+        if (self.mode) |value| allocator.free(value);
         if (self.background) |value| allocator.free(value);
         if (self.foreground) |value| allocator.free(value);
         if (self.selection) |value| allocator.free(value);
@@ -216,6 +235,7 @@ pub const ThemeConfig = struct {
 
     pub fn duplicate(self: ThemeConfig, allocator: std.mem.Allocator) !ThemeConfig {
         return ThemeConfig{
+            .mode = if (self.mode) |v| try allocator.dupe(u8, v) else null,
             .background = if (self.background) |v| try allocator.dupe(u8, v) else null,
             .foreground = if (self.foreground) |v| try allocator.dupe(u8, v) else null,
             .selection = if (self.selection) |v| try allocator.dupe(u8, v) else null,
@@ -242,6 +262,29 @@ pub const default_palette = [16]Color{
     .{ .r = 198, .g = 120, .b = 221 },
     .{ .r = 86, .g = 182, .b = 194 },
     .{ .r = 205, .g = 214, .b = 224 },
+};
+
+/// One Light ANSI palette — the light-mode counterpart of `default_palette`
+/// (which is One Dark). Black is dark (readable text), white/bright-white stay
+/// light by light-theme convention; bright-yellow is darkened for contrast on
+/// the light background.
+pub const default_palette_light = [16]Color{
+    .{ .r = 56, .g = 58, .b = 66 }, // black        #383A42
+    .{ .r = 228, .g = 86, .b = 73 }, // red          #E45649
+    .{ .r = 80, .g = 161, .b = 79 }, // green        #50A14F
+    .{ .r = 193, .g = 132, .b = 1 }, // yellow       #C18401
+    .{ .r = 64, .g = 120, .b = 242 }, // blue         #4078F2
+    .{ .r = 166, .g = 38, .b = 164 }, // magenta      #A626A4
+    .{ .r = 1, .g = 132, .b = 188 }, // cyan         #0184BC
+    .{ .r = 160, .g = 161, .b = 167 }, // white        #A0A1A7
+    .{ .r = 105, .g = 108, .b = 119 }, // bright black  #696C77
+    .{ .r = 228, .g = 86, .b = 73 }, // bright red    #E45649
+    .{ .r = 80, .g = 161, .b = 79 }, // bright green  #50A14F
+    .{ .r = 152, .g = 104, .b = 1 }, // bright yellow #986801
+    .{ .r = 64, .g = 120, .b = 242 }, // bright blue   #4078F2
+    .{ .r = 166, .g = 38, .b = 164 }, // bright magenta#A626A4
+    .{ .r = 1, .g = 132, .b = 188 }, // bright cyan   #0184BC
+    .{ .r = 250, .g = 250, .b = 250 }, // bright white  #FAFAFA
 };
 
 pub const Rendering = struct {
@@ -991,8 +1034,11 @@ pub const Config = struct {
             \\#                            # its path so a CLI (e.g. Claude Code)
             \\#                            # attaches the image.
             \\
-            \\# Theme colors (hex format)
+            \\# Theme (hex colors)
             \\# [theme]
+            \\# mode = "light"   # "light" = Cacha light preset (bg #D6D6D5 + One
+            \\#                  # Light palette); omit or "dark" = default dark.
+            \\#                  # The keys below override the active preset.
             \\# background = "#262624"
             \\# foreground = "#CDD6E0"
             \\# selection = "#1B2230"
@@ -1162,6 +1208,26 @@ test "ThemeConfig - custom colors" {
     try std.testing.expectEqual(@as(u8, 0), fg.r);
     try std.testing.expectEqual(@as(u8, 255), fg.g);
     try std.testing.expectEqual(@as(u8, 0), fg.b);
+}
+
+test "ThemeConfig - light mode preset" {
+    // Dark is the default.
+    try std.testing.expect(!(ThemeConfig{}).isLight());
+    try std.testing.expectEqual(Color.default_background, (ThemeConfig{}).getBackground());
+
+    // mode = "light" flips background, foreground, accent, selection, and palette.
+    const light = ThemeConfig{ .mode = "light" };
+    try std.testing.expect(light.isLight());
+    try std.testing.expectEqual(Color.default_background_light, light.getBackground()); // #D6D6D5
+    try std.testing.expectEqual(Color.default_foreground_light, light.getForeground());
+    try std.testing.expectEqual(Color.default_accent_light, light.getAccent());
+    try std.testing.expectEqual(default_palette_light[0], light.getPaletteColor(0)); // dark "black"
+    try std.testing.expect(std.ascii.eqlIgnoreCase("LIGHT", "light")); // case-insensitive guard
+
+    // Explicit overrides still win over the light preset.
+    const overridden = ThemeConfig{ .mode = "light", .background = "#FF0000" };
+    try std.testing.expectEqual(@as(u8, 255), overridden.getBackground().r);
+    try std.testing.expectEqual(@as(u8, 0), overridden.getBackground().g);
 }
 
 test "font grid_scale / inactive overlay - defaults and parsing" {

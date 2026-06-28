@@ -168,7 +168,7 @@ Architect stores configuration in `~/.config/architect/`:
 * `config.toml`: read-only user preferences (edit via `⌘,`).
 * `persistence.toml`: runtime state (window position/size, font size, terminal cwds), managed automatically.
 
-Common settings include font family, theme colors, grid font scale, and logging minimum severity (`[logging].min_level`). On macOS, structured app logs are written to `~/Library/Logs/Architect/` with size-based rotation at 10 MiB, including startup/shutdown markers and grid/full view transition events at `INFO`. The grid size is dynamic and adapts to the number of terminals. Remove the files to reset to the default values.
+Common settings include font family, theme colors, grid font scale, and logging minimum severity (`[logging].min_level`). Set `[theme].mode = "light"` for a light theme matched to the Cacha companion app (background `#D6D6D5` + One Light palette); see [`docs/configuration.md`](docs/configuration.md#light-mode). On macOS, structured app logs are written to `~/Library/Logs/Architect/` with size-based rotation at 10 MiB, including startup/shutdown markers and grid/full view transition events at `INFO`. The grid size is dynamic and adapts to the number of terminals. Remove the files to reset to the default values.
 
 ## Troubleshooting
 
