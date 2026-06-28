@@ -2796,7 +2796,7 @@ pub fn run() !void {
                         if (focused.spawned and !focused.dead) {
                             if (config.ui.show_hotkey_feedback) ui.showHotkey("⌘⇧↓", now);
                             session_interaction_component.resetScrollIfNeeded(anim_state.focused_session);
-                            focused.sendInput(input.CTRL_END_SEQUENCE) catch |err| {
+                            focused.sendInput(input.ctrl_end_sequence) catch |err| {
                                 log.warn("jump-to-bottom send failed: {}", .{err});
                             };
                         }

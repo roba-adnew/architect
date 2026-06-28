@@ -1609,7 +1609,7 @@ test "gridCellAt maps by fixed cell size, not proportional stretch" {
     const cw = 12;
     const ch = 16;
 
-    const mid = gridCellAt(50, 40, 200, 100, cw, ch, 30, 20).?;
+    const mid = gridCellAt(50, 40, 200, 100, cw, ch, 30, 20) orelse return error.TestUnexpectedNull;
     try std.testing.expectEqual(@as(c_int, 16), mid.visible_cols); // 200/12
     try std.testing.expectEqual(@as(c_int, 6), mid.visible_rows); //  100/16
     try std.testing.expectEqual(@as(c_int, 4), mid.col); // 50/12
@@ -1622,7 +1622,7 @@ test "gridCellAt maps by fixed cell size, not proportional stretch" {
     try std.testing.expectEqual(@as(c_int, 0), gridCellAt(0, 15, 200, 100, cw, ch, 30, 20).?.row);
 
     // Past the last visible cell clamps to the last drawn row/col, never beyond.
-    const far = gridCellAt(9999, 9999, 200, 100, cw, ch, 30, 20).?;
+    const far = gridCellAt(9999, 9999, 200, 100, cw, ch, 30, 20) orelse return error.TestUnexpectedNull;
     try std.testing.expectEqual(@as(c_int, 5), far.row);
     try std.testing.expectEqual(@as(c_int, 15), far.col);
 

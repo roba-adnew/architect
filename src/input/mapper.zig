@@ -30,9 +30,9 @@ pub fn gridNavShortcut(key: c.SDL_Keycode, mod: c.SDL_Keymod) ?GridNavDirection 
 /// Standard xterm Ctrl+End (CSI 1;5F): modifier 5 = Ctrl, final F = End. This is
 /// what iTerm/Ghostty/kitty emit for Ctrl+End, so Claude Code's "jump to bottom"
 /// (and any TUI's scroll-to-end) responds to it.
-pub const CTRL_END_SEQUENCE = "\x1b[1;5F";
+pub const ctrl_end_sequence = "\x1b[1;5F";
 
-/// Cmd+Shift+Down → "jump to bottom". We send CTRL_END_SEQUENCE for this combo
+/// Cmd+Shift+Down → "jump to bottom". We send ctrl_end_sequence for this combo
 /// because (a) encodeKeyWithMod maps the bare End key to Ctrl+E and drops the
 /// Ctrl modifier, so Architect never emits a real Ctrl+End, and (b) macOS window
 /// managers commonly grab the physical Ctrl+End (Ctrl+Fn+→) for window tiling.
@@ -404,7 +404,7 @@ test "jumpToBottomShortcut - cmd+shift+down only" {
     try std.testing.expect(!jumpToBottomShortcut(c.SDLK_UP, c.SDL_KMOD_GUI | c.SDL_KMOD_SHIFT));
     try std.testing.expect(!jumpToBottomShortcut(c.SDLK_DOWN, c.SDL_KMOD_GUI | c.SDL_KMOD_SHIFT | c.SDL_KMOD_CTRL));
     // The sequence we emit is the standard Ctrl+End.
-    try std.testing.expectEqualSlices(u8, "\x1b[1;5F", CTRL_END_SEQUENCE);
+    try std.testing.expectEqualSlices(u8, "\x1b[1;5F", ctrl_end_sequence);
 }
 
 test "encodeKeyWithMod - shift+tab legacy mode" {

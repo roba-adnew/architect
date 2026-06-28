@@ -340,7 +340,10 @@ pub fn panePath(allocator: std.mem.Allocator, slot_index: usize) ?[]u8 {
 
     const path = std.mem.trimRight(u8, result.stdout, " \t\r\n");
     if (path.len == 0) return null;
-    return allocator.dupe(u8, path) catch null;
+    return allocator.dupe(u8, path) catch |err| {
+        log.warn("panePath: dupe failed: {}", .{err});
+        return null;
+    };
 }
 
 /// Discard a STALE ORPHAN tmux session for a slot before spawning a fresh
