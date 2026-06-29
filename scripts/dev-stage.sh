@@ -31,9 +31,13 @@ for arg in "$@"; do
 done
 [ -n "${DEV_STAGE_DEBUG:-}" ] && build_debug=true
 
-ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
-if [ -z "$ROOT" ] || [ ! -f "$ROOT/scripts/bundle-macos.sh" ]; then
-    echo "error: run this from inside the Architect repo (no scripts/bundle-macos.sh found)" >&2
+# Locate the repo from THIS script's own path, not $PWD: pushstage invokes us by
+# absolute path without cd-ing, so $PWD can be $HOME (or any other repo) and a
+# git/CWD-based lookup would resolve to the wrong tree or nothing — the guard
+# below would then misfire with a confusing "not in the repo" error.
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [ ! -f "$ROOT/scripts/bundle-macos.sh" ]; then
+    echo "error: dev-stage.sh must live in <repo>/scripts (bundle-macos.sh not found beside it)" >&2
     exit 1
 fi
 cd "$ROOT"
