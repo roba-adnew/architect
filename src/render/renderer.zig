@@ -514,7 +514,7 @@ fn renderSessionContent(
             }
 
             if (style.flags.faint) {
-                fg_color = applyFaint(fg_color);
+                fg_color = applyFaint(fg_color, bg_color);
             }
 
             if (on_cursor) {
@@ -1202,6 +1202,23 @@ test "getCellColor uses the live terminal palette for indexed colors" {
     try std.testing.expectEqual(@as(u8, 255), color.a);
 }
 
+test "applyFaint blends toward the background, not toward black" {
+    // Dark theme: light text dims to a darker shade, still above the bg.
+    const dark_bg = c.SDL_Color{ .r = 38, .g = 38, .b = 36, .a = 255 };
+    const light_fg = c.SDL_Color{ .r = 205, .g = 214, .b = 224, .a = 255 };
+    const faint_dark = applyFaint(light_fg, dark_bg);
+    try std.testing.expect(faint_dark.r > dark_bg.r and faint_dark.r < light_fg.r);
+
+    // Light theme is the regression this guards: near-black text must dim toward
+    // the LIGHT bg (get lighter), not toward black. The old `* 0.6` made it
+    // darker — indistinguishable from body text — which would fail here.
+    const light_bg = c.SDL_Color{ .r = 214, .g = 214, .b = 213, .a = 255 };
+    const dark_fg = c.SDL_Color{ .r = 26, .g = 26, .b = 26, .a = 255 };
+    const faint_light = applyFaint(dark_fg, light_bg);
+    try std.testing.expect(faint_light.r > dark_fg.r); // lighter than the text
+    try std.testing.expect(faint_light.r < light_bg.r); // but still dimmer than bg
+}
+
 test "cache refresh predicate stays clean for an unchanged content-only texture" {
     const entry = RenderCache.Entry{
         .cache_epoch = 42,
@@ -1295,15 +1312,24 @@ fn chooseVariant(style: ghostty_vt.Style) FontVariant {
     return .regular;
 }
 
-fn applyFaint(color: c.SDL_Color) c.SDL_Color {
+/// Faint (SGR 2) blends the foreground toward the cell BACKGROUND, not toward
+/// black. Scaling toward black only dims correctly on a dark theme; on a light
+/// theme it darkens already-dark text into the body color, erasing the
+/// distinction (e.g. Claude Code's autosuggest "ghost" text reads identical to
+/// real input). Blending toward the bg dims correctly in either direction:
+/// keeps `faint_factor` of the fg and pulls the rest toward the background.
+fn applyFaint(color: c.SDL_Color, bg: c.SDL_Color) c.SDL_Color {
     const factor = faint_factor;
-    const r: u32 = @intFromFloat(@as(f32, @floatFromInt(color.r)) * factor);
-    const g: u32 = @intFromFloat(@as(f32, @floatFromInt(color.g)) * factor);
-    const b: u32 = @intFromFloat(@as(f32, @floatFromInt(color.b)) * factor);
+    const mix = struct {
+        fn ch(fg: u8, b: u8, f: f32) u8 {
+            const v = @as(f32, @floatFromInt(fg)) * f + @as(f32, @floatFromInt(b)) * (1.0 - f);
+            return @intFromFloat(@max(0.0, @min(255.0, v)));
+        }
+    };
     return c.SDL_Color{
-        .r = @intCast(r),
-        .g = @intCast(g),
-        .b = @intCast(b),
+        .r = mix.ch(color.r, bg.r, factor),
+        .g = mix.ch(color.g, bg.g, factor),
+        .b = mix.ch(color.b, bg.b, factor),
         .a = color.a,
     };
 }
