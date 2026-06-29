@@ -235,6 +235,30 @@ pub const SessionInteractionComponent = struct {
                             return true;
                         }
 
+                        // Cmd+Left-click opens the link under the cursor (OSC 8 or
+                        // detected URL), bypassing the focused program's mouse
+                        // reporting — same reasoning as the double-click case above.
+                        // Without this, the mouse-tracking forward below swallows
+                        // the click and links never open under Claude/vim/pagers.
+                        // Standard terminal behavior (Cmd/Super+Click follows links
+                        // regardless of mouse mode). Fully consumes the click so a
+                        // stray Cmd-click never reaches the app.
+                        if (event.button.button == c.SDL_BUTTON_LEFT and event.button.clicks == 1 and
+                            (c.SDL_GetModState() & c.SDL_KMOD_GUI) != 0)
+                        {
+                            if (fullViewPinFromMouse(focused, view, mouse_x, mouse_y, host.window_w, host.window_h, self.font, host.term_cols, host.term_rows, host.ui_scale)) |pin| {
+                                if (getLinkAtPin(self.allocator, &focused.terminal.?, pin, view.is_viewing_scrollback, focused.cwd_path)) |uri| {
+                                    defer self.allocator.free(uri);
+                                    open_url.openTarget(self.allocator, uri) catch |err| {
+                                        log.err("failed to open link: {}", .{err});
+                                    };
+                                } else {
+                                    beginSelection(focused, view, pin);
+                                }
+                                return true;
+                            }
+                        }
+
                         if (terminalHasMouseTracking(terminal) and !view.is_viewing_scrollback) {
                             if (sdlToMouseButton(event.button.button)) |btn| {
                                 if (fullViewCellFromMouse(mouse_x, mouse_y, host.window_w, host.window_h, self.font, host.term_cols, host.term_rows, host.ui_scale)) |cell| {
@@ -259,20 +283,10 @@ pub const SessionInteractionComponent = struct {
                                 } else if (clicks == 2) {
                                     selectWord(focused, view, pin);
                                 } else {
-                                    const mod = c.SDL_GetModState();
-                                    const cmd_held = (mod & c.SDL_KMOD_GUI) != 0;
-                                    if (cmd_held) {
-                                        if (getLinkAtPin(self.allocator, &focused.terminal.?, pin, view.is_viewing_scrollback, focused.cwd_path)) |uri| {
-                                            defer self.allocator.free(uri);
-                                            open_url.openTarget(self.allocator, uri) catch |err| {
-                                                log.err("failed to open link: {}", .{err});
-                                            };
-                                        } else {
-                                            beginSelection(focused, view, pin);
-                                        }
-                                    } else {
-                                        beginSelection(focused, view, pin);
-                                    }
+                                    // Cmd+Click (link-open) is handled above, before
+                                    // the mouse-tracking forward; a plain single
+                                    // click here just starts a selection.
+                                    beginSelection(focused, view, pin);
                                 }
                                 return true;
                             }
