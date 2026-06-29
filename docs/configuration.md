@@ -106,7 +106,8 @@ The configured theme colors are reused across terminal chrome and overlay surfac
 
 Set `mode = "light"` to switch the defaults to a light preset matched to the
 Cacha companion app's light theme (background `#D6D6D5`, soft near-black text,
-Cacha's blue accent, and a One Light ANSI palette). `mode` only changes which
+Cacha's blue accent, and a light ANSI palette tuned for readable contrast on the
+gray background). `mode` only changes which
 set of *defaults* is used — any explicit `background`/`foreground`/`accent`/
 `selection` or `[theme.palette]` key still overrides the preset. Changing the
 mode takes effect on the next launch.
@@ -118,7 +119,7 @@ mode takes effect on the next launch.
 | `background` | `#262624` | `#D6D6D5` | App + terminal background |
 | `foreground` | `#CDD6E0` | `#1A1A1A` | Default text color |
 | `selection` | `#1B2230` | `#BAC2CA` | Selection highlight |
-| `accent` | `#61AFEF` | `#3B82F6` | Focus indicators / UI accent |
+| `accent` | `#61AFEF` | `#2563EB` | Focus indicators / UI accent |
 
 ### ANSI Palette
 
@@ -147,7 +148,7 @@ bright_cyan = "#56B6C2"
 bright_white = "#CDD6E0"
 ```
 
-Omitted colors fall back to the built-in One Dark-inspired palette (or, when `mode = "light"`, the One Light palette).
+Omitted colors fall back to the built-in One Dark-inspired palette (or, when `mode = "light"`, a light palette tuned for readable contrast on the gray background).
 
 ### UI Configuration
 

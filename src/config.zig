@@ -17,12 +17,13 @@ pub const Color = struct {
     pub const default_selection: Color = .{ .r = 27, .g = 34, .b = 48 };
 
     // Light-mode defaults (`[theme] mode = "light"`), matched to Cacha's light
-    // theme (Color+Cacha.swift): background #D6D6D5, link/accent #3B82F6. Text is
-    // a soft near-black (#1A1A1A) — common on light terminals (Cacha itself uses
-    // pure #000000); selection is Cacha's secondary blue-gray #BAC2CA.
+    // theme (Color+Cacha.swift): background #D6D6D5, soft near-black text #1A1A1A
+    // (Cacha uses pure #000000), selection is Cacha's secondary blue-gray #BAC2CA.
+    // Accent is Cacha's link blue darkened from #3B82F6 to #2563EB so it clears
+    // ~3:1 contrast on the gray background (the lighter blue washed out).
     pub const default_background_light: Color = .{ .r = 214, .g = 214, .b = 213 };
     pub const default_foreground_light: Color = .{ .r = 26, .g = 26, .b = 26 };
-    pub const default_accent_light: Color = .{ .r = 59, .g = 130, .b = 246 };
+    pub const default_accent_light: Color = .{ .r = 37, .g = 99, .b = 235 };
     pub const default_selection_light: Color = .{ .r = 186, .g = 194, .b = 202 };
 
     pub fn fromHex(hex: []const u8) ?Color {
@@ -264,27 +265,30 @@ pub const default_palette = [16]Color{
     .{ .r = 205, .g = 214, .b = 224 },
 };
 
-/// One Light ANSI palette — the light-mode counterpart of `default_palette`
-/// (which is One Dark). Black is dark (readable text), white/bright-white stay
-/// light by light-theme convention; bright-yellow is darkened for contrast on
-/// the light background.
+/// Light-mode ANSI palette, tuned for readability on the #D6D6D5 background.
+/// One Light (the obvious One-Dark counterpart) is calibrated for a near-white
+/// (#FAFAFA) page, so on Cacha's darker gray its mid-tones wash out — plain
+/// yellow/blue dropped to ~2:1 contrast. These are darkened so every chromatic
+/// color clears ~3.5:1+, and the white/bright entries are readable grays rather
+/// than near-background light tints. The `light_palette_chromatic` test guards
+/// the contrast floor. Keep entries in sync with that test if you retune.
 pub const default_palette_light = [16]Color{
-    .{ .r = 56, .g = 58, .b = 66 }, // black        #383A42
-    .{ .r = 228, .g = 86, .b = 73 }, // red          #E45649
-    .{ .r = 80, .g = 161, .b = 79 }, // green        #50A14F
-    .{ .r = 193, .g = 132, .b = 1 }, // yellow       #C18401
-    .{ .r = 64, .g = 120, .b = 242 }, // blue         #4078F2
-    .{ .r = 166, .g = 38, .b = 164 }, // magenta      #A626A4
-    .{ .r = 1, .g = 132, .b = 188 }, // cyan         #0184BC
-    .{ .r = 160, .g = 161, .b = 167 }, // white        #A0A1A7
-    .{ .r = 105, .g = 108, .b = 119 }, // bright black  #696C77
-    .{ .r = 228, .g = 86, .b = 73 }, // bright red    #E45649
-    .{ .r = 80, .g = 161, .b = 79 }, // bright green  #50A14F
-    .{ .r = 152, .g = 104, .b = 1 }, // bright yellow #986801
-    .{ .r = 64, .g = 120, .b = 242 }, // bright blue   #4078F2
-    .{ .r = 166, .g = 38, .b = 164 }, // bright magenta#A626A4
-    .{ .r = 1, .g = 132, .b = 188 }, // bright cyan   #0184BC
-    .{ .r = 250, .g = 250, .b = 250 }, // bright white  #FAFAFA
+    .{ .r = 56, .g = 58, .b = 66 }, // black         #383A42
+    .{ .r = 192, .g = 39, .b = 27 }, // red           #C0271B
+    .{ .r = 30, .g = 112, .b = 40 }, // green         #1E7028
+    .{ .r = 115, .g = 90, .b = 0 }, // yellow        #735A00 (dark amber)
+    .{ .r = 30, .g = 84, .b = 200 }, // blue          #1E54C8
+    .{ .r = 142, .g = 35, .b = 146 }, // magenta       #8E2392
+    .{ .r = 0, .g = 110, .b = 140 }, // cyan          #006E8C
+    .{ .r = 86, .g = 91, .b = 99 }, // white         #565B63 (dim gray)
+    .{ .r = 110, .g = 113, .b = 122 }, // bright black   #6E717A (comment gray)
+    .{ .r = 200, .g = 41, .b = 26 }, // bright red     #C8291A
+    .{ .r = 26, .g = 112, .b = 40 }, // bright green   #1A7028
+    .{ .r = 122, .g = 96, .b = 0 }, // bright yellow  #7A6000
+    .{ .r = 35, .g = 96, .b = 216 }, // bright blue    #2360D8
+    .{ .r = 160, .g = 43, .b = 164 }, // bright magenta #A02BA4
+    .{ .r = 0, .g = 112, .b = 143 }, // bright cyan    #00708F
+    .{ .r = 26, .g = 26, .b = 26 }, // bright white   #1A1A1A (emphasis)
 };
 
 pub const Rendering = struct {
@@ -1228,6 +1232,38 @@ test "ThemeConfig - light mode preset" {
     const overridden = ThemeConfig{ .mode = "light", .background = "#FF0000" };
     try std.testing.expectEqual(@as(u8, 255), overridden.getBackground().r);
     try std.testing.expectEqual(@as(u8, 0), overridden.getBackground().g);
+}
+
+test "light palette chromatic colors clear the readability floor" {
+    const wcag = struct {
+        fn lin(v: u8) f64 {
+            const s = @as(f64, @floatFromInt(v)) / 255.0;
+            return if (s <= 0.03928) s / 12.92 else std.math.pow(f64, (s + 0.055) / 1.055, 2.4);
+        }
+        fn lum(col: Color) f64 {
+            return 0.2126 * lin(col.r) + 0.7152 * lin(col.g) + 0.0722 * lin(col.b);
+        }
+        fn contrast(a: Color, b: Color) f64 {
+            const la = lum(a);
+            const lb = lum(b);
+            return (@max(la, lb) + 0.05) / (@min(la, lb) + 0.05);
+        }
+    };
+
+    const bg = Color.default_background_light;
+    // Chromatic ANSI indices only — the gray ramp (0,7,8,15) is intentionally
+    // low-contrast in places (dim text / comments), not the readability concern
+    // that motivated the retune.
+    const chromatic = [_]usize{ 1, 2, 3, 4, 5, 6, 9, 10, 11, 12, 13, 14 };
+    for (chromatic) |i| {
+        const ratio = wcag.contrast(default_palette_light[i], bg);
+        if (ratio < 3.5) {
+            std.debug.print("light palette[{d}] contrast {d:.2} < 3.5 vs bg\n", .{ i, ratio });
+            return error.LowContrast;
+        }
+    }
+    // The accent (focus borders / hotkey pills) must clear the 3:1 UI floor too.
+    try std.testing.expect(wcag.contrast(Color.default_accent_light, bg) >= 3.0);
 }
 
 test "font grid_scale / inactive overlay - defaults and parsing" {
