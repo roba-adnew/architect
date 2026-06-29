@@ -137,21 +137,53 @@ fn writeConf(path: [:0]const u8) !void {
 /// `unbind-key -a` errors ("table prefix doesn't exist") on a server whose
 /// prefix table was already emptied at start, aborting the rest of the file
 /// before it reaches these lines. Keep in sync with `conf_contents`.
+///
+/// `allow-passthrough`/`set-titles*` use `set -g` (replace), so re-running them
+/// every spawn is harmless. `terminal-features` uses `set -a` (append), so it is
+/// guarded: appending unconditionally on every spawn piled up duplicate
+/// ",*:hyperlinks" entries. Only append when the server doesn't already advertise
+/// the feature (a fresh conf-built server already has "*:RGB:hyperlinks").
 fn refreshRunningServer(allocator: std.mem.Allocator, tmux_path: [:0]const u8, socket_path: [:0]const u8) void {
+    // Idempotent globals first. If no server is running yet this errors and we
+    // return (nothing to refresh — the conf applies at server creation).
     var child = std.process.Child.init(&[_][]const u8{
-        tmux_path,       "-S",                socket_path,
-        "set",           "-ag",               "terminal-features",
-        ",*:hyperlinks", ";",                 "set",
-        "-g",            "allow-passthrough", "on",
-        ";",             "set",               "-g",
-        "set-titles",    "on",                ";",
-        "set",           "-g",                "set-titles-string",
-        "#{pane_title}",
+        tmux_path,           "-S",            socket_path,
+        "set",               "-g",            "allow-passthrough",
+        "on",                ";",             "set",
+        "-g",                "set-titles",    "on",
+        ";",                 "set",           "-g",
+        "set-titles-string", "#{pane_title}",
     }, allocator);
     child.stdin_behavior = .Ignore;
     child.stdout_behavior = .Ignore;
     child.stderr_behavior = .Ignore;
     _ = child.spawnAndWait() catch return;
+
+    // Append the hyperlinks feature only if the server lacks it, so repeated
+    // spawns don't accumulate duplicates. On any query failure, assume present
+    // and skip — the conf already guarantees it on fresh servers, so the worst
+    // case is a stale pre-hyperlinks server waits until restart, never a dupe.
+    const has_hyperlinks = blk: {
+        const result = std.process.Child.run(.{
+            .allocator = allocator,
+            .argv = &[_][]const u8{ tmux_path, "-S", socket_path, "show", "-g", "terminal-features" },
+        }) catch |err| {
+            log.debug("refreshRunningServer: terminal-features query failed: {}", .{err});
+            break :blk true;
+        };
+        defer allocator.free(result.stdout);
+        defer allocator.free(result.stderr);
+        break :blk std.mem.indexOf(u8, result.stdout, "hyperlinks") != null;
+    };
+    if (has_hyperlinks) return;
+
+    var feat = std.process.Child.init(&[_][]const u8{
+        tmux_path, "-S", socket_path, "set", "-ag", "terminal-features", ",*:hyperlinks",
+    }, allocator);
+    feat.stdin_behavior = .Ignore;
+    feat.stdout_behavior = .Ignore;
+    feat.stderr_behavior = .Ignore;
+    _ = feat.spawnAndWait() catch return;
 }
 
 /// Build persist options for a session slot, or null if persistence is disabled
