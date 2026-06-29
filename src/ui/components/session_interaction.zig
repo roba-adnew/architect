@@ -362,7 +362,13 @@ pub const SessionInteractionComponent = struct {
                             const btn_held = (event.motion.state & c.SDL_BUTTON_LMASK) != 0 or
                                 (event.motion.state & c.SDL_BUTTON_MMASK) != 0 or
                                 (event.motion.state & c.SDL_BUTTON_RMASK) != 0;
-                            if (any_tracking or (btn_tracking and btn_held)) {
+                            // Cmd+hover must reach the link-underline detection below,
+                            // so don't forward motion while Cmd is held — the same
+                            // bypass as Cmd+Click. Without this, an app in any-motion
+                            // mode (DECSET 1003, e.g. Claude Code) swallows every
+                            // motion event and links never underline on Cmd-hover.
+                            const cmd_held = (c.SDL_GetModState() & c.SDL_KMOD_GUI) != 0;
+                            if (!cmd_held and (any_tracking or (btn_tracking and btn_held))) {
                                 if (fullViewCellFromMouse(mouse_x, mouse_y, host.window_w, host.window_h, self.font, host.term_cols, host.term_rows, host.ui_scale)) |cell| {
                                     const held_btn: ?input.MouseButton = if ((event.motion.state & c.SDL_BUTTON_LMASK) != 0)
                                         .left
