@@ -16,8 +16,12 @@ pub fn fontSizeShortcut(key: c.SDL_Keycode, mod: c.SDL_Keymod) ?FontSizeDirectio
 }
 
 pub fn gridNavShortcut(key: c.SDL_Keycode, mod: c.SDL_Keymod) ?GridNavDirection {
-    if ((mod & c.SDL_KMOD_GUI) == 0) return null;
-    if ((mod & c.SDL_KMOD_SHIFT) != 0) return null;
+    // Shift+Arrow moves focus between grid tiles. We require Shift and exclude
+    // the other modifiers so Cmd+Arrow falls through to encodeKeyWithMod (where
+    // Cmd+Left/Right become line start/end) and Cmd+Shift+Down still routes to
+    // jumpToBottomShortcut.
+    if ((mod & c.SDL_KMOD_SHIFT) == 0) return null;
+    if ((mod & (c.SDL_KMOD_GUI | c.SDL_KMOD_CTRL | c.SDL_KMOD_ALT)) != 0) return null;
     return switch (key) {
         c.SDLK_UP => .up,
         c.SDLK_DOWN => .down,
@@ -36,8 +40,8 @@ pub const ctrl_end_sequence = "\x1b[1;5F";
 /// because (a) encodeKeyWithMod maps the bare End key to Ctrl+E and drops the
 /// Ctrl modifier, so Architect never emits a real Ctrl+End, and (b) macOS window
 /// managers commonly grab the physical Ctrl+End (Ctrl+Fn+→) for window tiling.
-/// Cmd+Shift+Down is the unshifted Cmd+Down grid-nav's shifted sibling and is
-/// otherwise unbound.
+/// Cmd+Shift+Down is the Cmd-qualified sibling of the Shift+Down grid-nav and is
+/// otherwise unbound. gridNavShortcut excludes Cmd, so this combo reaches here.
 pub fn jumpToBottomShortcut(key: c.SDL_Keycode, mod: c.SDL_Keymod) bool {
     if (key != c.SDLK_DOWN) return false;
     if ((mod & c.SDL_KMOD_GUI) == 0) return false;
@@ -189,7 +193,12 @@ pub fn encodeKeyWithMod(key: c.SDL_Keycode, mod: c.SDL_Keymod, cursor_keys: bool
                     break :blk 3;
                 },
                 c.SDLK_RETURN => blk: {
-                    buf[0] = '\r';
+                    // Shift+Enter → insert a newline. Without the kitty protocol
+                    // we can't encode a distinct Shift+Enter, so emit LF (0x0a,
+                    // == Ctrl+J) — the universal "insert newline" that Claude Code
+                    // and other line editors accept in any terminal. Plain Enter
+                    // still sends CR (0x0d) and submits.
+                    buf[0] = '\n';
                     break :blk 1;
                 },
                 c.SDLK_BACKSPACE => blk: {
@@ -421,11 +430,27 @@ test "encodeKeyWithMod - shift+tab kitty mode" {
     try std.testing.expectEqualSlices(u8, "\x1b[9;2u", buf[0..n]);
 }
 
-test "encodeKeyWithMod - shift+enter legacy mode" {
+test "encodeKeyWithMod - shift+enter legacy mode sends newline, not submit" {
     var buf: [16]u8 = undefined;
     const n = encodeKeyWithMod(c.SDLK_RETURN, c.SDL_KMOD_SHIFT, false, false, &buf);
     try std.testing.expectEqual(@as(usize, 1), n);
-    try std.testing.expectEqual(@as(u8, '\r'), buf[0]);
+    // LF (Ctrl+J), not CR — CR would submit in Claude Code.
+    try std.testing.expectEqual(@as(u8, '\n'), buf[0]);
+}
+
+test "gridNavShortcut - shift+arrow navigates, cmd/ctrl/alt do not" {
+    // Shift+Arrow is grid navigation.
+    try std.testing.expectEqual(GridNavDirection.up, gridNavShortcut(c.SDLK_UP, c.SDL_KMOD_SHIFT).?);
+    try std.testing.expectEqual(GridNavDirection.down, gridNavShortcut(c.SDLK_DOWN, c.SDL_KMOD_SHIFT).?);
+    try std.testing.expectEqual(GridNavDirection.left, gridNavShortcut(c.SDLK_LEFT, c.SDL_KMOD_SHIFT).?);
+    try std.testing.expectEqual(GridNavDirection.right, gridNavShortcut(c.SDLK_RIGHT, c.SDL_KMOD_SHIFT).?);
+    // Cmd+Arrow must fall through (it becomes line start/end in encodeKeyWithMod).
+    try std.testing.expect(gridNavShortcut(c.SDLK_LEFT, c.SDL_KMOD_GUI) == null);
+    try std.testing.expect(gridNavShortcut(c.SDLK_RIGHT, c.SDL_KMOD_GUI) == null);
+    // Cmd+Shift+Down must fall through so jumpToBottomShortcut can claim it.
+    try std.testing.expect(gridNavShortcut(c.SDLK_DOWN, c.SDL_KMOD_GUI | c.SDL_KMOD_SHIFT) == null);
+    // Bare arrows are not grid nav.
+    try std.testing.expect(gridNavShortcut(c.SDLK_UP, 0) == null);
 }
 
 test "encodeKeyWithMod - shift+enter kitty mode" {

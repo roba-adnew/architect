@@ -2752,10 +2752,10 @@ pub fn run() !void {
                         if (anim_state.mode == .Grid) {
                             if (config.ui.show_hotkey_feedback) {
                                 const arrow = switch (direction) {
-                                    .up => "⌘↑",
-                                    .down => "⌘↓",
-                                    .left => "⌘←",
-                                    .right => "⌘→",
+                                    .up => "⇧↑",
+                                    .down => "⇧↓",
+                                    .left => "⇧←",
+                                    .right => "⇧→",
                                 };
                                 ui.showHotkey(arrow, now);
                             }
@@ -2766,10 +2766,10 @@ pub fn run() !void {
                         } else if (anim_state.mode == .Full) {
                             if (config.ui.show_hotkey_feedback) {
                                 const arrow = switch (direction) {
-                                    .up => "⌘↑",
-                                    .down => "⌘↓",
-                                    .left => "⌘←",
-                                    .right => "⌘→",
+                                    .up => "⇧↑",
+                                    .down => "⇧↓",
+                                    .left => "⇧←",
+                                    .right => "⇧→",
                                 };
                                 ui.showHotkey(arrow, now);
                             }
