@@ -79,9 +79,19 @@ var next_session_id = std.atomic.Value(usize).init(0);
 
 pub const SessionState = struct {
     slot_index: usize,
-    /// True when this shell was wrapped in a tmux session (ARCHITECT_PERSIST_SESSIONS
-    /// + tmux present). tmux then owns the scrollback, so wheel-scroll is routed to
-    /// tmux copy-mode instead of the (empty) ghostty-vt scrollback. See tmux.scrollHistory.
+    /// Stable per-object identity for the tmux persistence layer. Assigned once at
+    /// creation (= the physical array position) and NEVER reassigned — unlike
+    /// slot_index, which compactSessions rewrites to the current grid position as
+    /// terminals are hidden/closed/reordered. tmux session names (`architect-<n>`)
+    /// key off this so a live pane's name never drifts out from under it. Keying
+    /// them off the mutable slot_index instead let a new terminal reuse a name a
+    /// live session still held, and `tmux new-session -A` would ATTACH to (clone)
+    /// that live session. Must be stable for the object's lifetime.
+    persist_index: usize,
+    /// True when this shell was wrapped in a tmux session (persistence is on by
+    /// default; it engages whenever tmux is present on PATH). tmux then owns the
+    /// scrollback, so wheel-scroll is routed to tmux copy-mode instead of the
+    /// (empty) ghostty-vt scrollback. See tmux.scrollHistory.
     tmux_backed: bool = false,
     /// True after a wheel-scroll left this tmux pane in copy-mode; the next keystroke
     /// cancels copy-mode so the cursor returns to the live prompt. See sendInput.
@@ -188,6 +198,7 @@ pub const SessionState = struct {
 
         return SessionState{
             .slot_index = slot_index,
+            .persist_index = slot_index,
             .id = 0,
             .shell = null,
             .terminal = null,
@@ -218,7 +229,7 @@ pub const SessionState = struct {
     /// ensureSpawnedWithDir directly, which deliberately reattaches.
     pub fn ensureSpawnedFresh(self: *SessionState, working_dir: ?[:0]const u8, loop_opt: ?*xev.Loop) InitError!void {
         if (self.spawned) return;
-        tmux.discardOrphanSession(self.allocator, self.slot_index);
+        tmux.discardOrphanSession(self.allocator, self.persist_index);
         return self.ensureSpawnedWithDir(working_dir, loop_opt);
     }
 
@@ -229,12 +240,12 @@ pub const SessionState = struct {
         self.process_generation +%= 1;
         self.assignNewSessionId();
 
-        // Optional tmux-backed persistence: when ARCHITECT_PERSIST_SESSIONS=1 and
-        // tmux is available, the shell is wrapped in a detached tmux session so
-        // it survives an Architect restart. Null (the default) spawns a direct
-        // shell exactly as before. Freed after spawn — the forked child reads its
-        // own copy-on-write copy of these strings, so freeing here is safe.
-        const persist = tmux.buildPersist(self.allocator, self.slot_index);
+        // tmux-backed persistence (on by default): when tmux is available the
+        // shell is wrapped in a detached tmux session so it survives an Architect
+        // restart. Null (tmux not installed) spawns a direct shell exactly as
+        // before. Freed after spawn — the forked child reads its own copy-on-write
+        // copy of these strings, so freeing here is safe.
+        const persist = tmux.buildPersist(self.allocator, self.persist_index);
         defer if (persist) |p| tmux.freePersist(self.allocator, p);
         self.tmux_backed = persist != null;
 
@@ -721,7 +732,7 @@ pub const SessionState = struct {
         // Cancel copy-mode first; spawnAndWait so it's gone before `data` hits the PTY.
         if (self.scrolled_in_copy_mode) {
             self.scrolled_in_copy_mode = false;
-            tmux.cancelCopyMode(self.allocator, self.slot_index);
+            tmux.cancelCopyMode(self.allocator, self.persist_index);
         }
         try self.flushPendingWrites();
         const shell = &(self.shell orelse return);
@@ -754,7 +765,7 @@ pub const SessionState = struct {
         self.cwd_last_check = current_time;
 
         const new_path = if (self.tmux_backed)
-            (tmux.panePath(self.allocator, self.slot_index) orelse return)
+            (tmux.panePath(self.allocator, self.persist_index) orelse return)
         else
             (cwd_mod.getCwd(self.allocator, shell.child_pid) catch return);
 
@@ -824,7 +835,7 @@ pub const SessionState = struct {
     pub fn hasForegroundProcessThorough(self: *const SessionState) bool {
         if (!self.spawned or self.dead) return false;
         if (self.tmux_backed) {
-            return tmux.paneHasForegroundCommand(self.allocator, self.slot_index);
+            return tmux.paneHasForegroundCommand(self.allocator, self.persist_index);
         }
         return self.hasForegroundProcess();
     }

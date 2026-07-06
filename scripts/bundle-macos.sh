@@ -52,6 +52,20 @@ if [[ "$SIGN_APP" == true ]]; then
     else
         ENTITLEMENTS="$REPO_ROOT/macos/Architect.entitlements"
     fi
+
+    # Signing identity. A STABLE identity (Apple Development / Developer ID cert)
+    # gives the bundle a fixed designated requirement, so macOS TCC/privacy grants
+    # (Documents folder, camera, etc.) survive rebuilds. Ad-hoc ("-") changes the
+    # cdhash on every build, so TCC treats each rebuild as a new app and re-prompts.
+    # Set ARCHITECT_CODESIGN_IDENTITY to a cert (its SHA-1 hash or name, per
+    # `security find-identity -v -p codesigning`); defaults to ad-hoc so CI and
+    # machines without a cert build exactly as before.
+    SIGN_IDENTITY="${ARCHITECT_CODESIGN_IDENTITY:--}"
+    if [[ "$SIGN_IDENTITY" == "-" ]]; then
+        echo "Signing ad-hoc (set ARCHITECT_CODESIGN_IDENTITY for stable, TCC-persistent signing)."
+    else
+        echo "Signing with stable identity: $SIGN_IDENTITY"
+    fi
 fi
 
 echo "Bundling macOS application: $EXECUTABLE -> $APP_DIR"
@@ -64,20 +78,6 @@ fi
 
 rm -rf "$APP_DIR"
 mkdir -p "$LIB_DIR" "$RESOURCES_DIR" "$SHARE_DIR"
-
-# Optionally bake the persistent-sessions opt-in into the bundle. A bundled app
-# launched via `open`/Finder does NOT inherit the shell environment, so the env
-# var must live in Info.plist (LSEnvironment) to reach the daily app. Gated on
-# the bundle-time env so a plain bundle stays unchanged.
-PERSIST_PLIST=""
-if [[ "${ARCHITECT_PERSIST_SESSIONS:-}" == "1" || "${ARCHITECT_PERSIST_SESSIONS:-}" == "true" ]]; then
-    PERSIST_PLIST="    <key>LSEnvironment</key>
-    <dict>
-      <key>ARCHITECT_PERSIST_SESSIONS</key>
-      <string>1</string>
-    </dict>"
-    echo "Baking ARCHITECT_PERSIST_SESSIONS=1 into the app bundle (persistent agent sessions enabled)"
-fi
 
 cat > "$CONTENTS_DIR/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -96,7 +96,6 @@ cat > "$CONTENTS_DIR/Info.plist" <<EOF
     <string>architect</string>
     <key>CFBundleIconFile</key>
     <string>${APP_NAME}</string>
-${PERSIST_PLIST}
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSAppleEventsUsageDescription</key>
@@ -298,18 +297,18 @@ if [[ "$SIGN_APP" == true ]]; then
     shopt -s nullglob
     for lib in "$LIB_DIR"/*.dylib; do
         echo "Signing $(basename "$lib")..."
-        codesign --force --sign - "$lib"
+        codesign --force --sign "$SIGN_IDENTITY" "$lib"
     done
     shopt -u nullglob
 
     echo "Signing architect-mcp..."
-    codesign --force --sign - --entitlements "$ENTITLEMENTS" "$MACOS_DIR/architect-mcp"
+    codesign --force --sign "$SIGN_IDENTITY" --entitlements "$ENTITLEMENTS" "$MACOS_DIR/architect-mcp"
 
     echo "Signing architect..."
-    codesign --force --sign - --entitlements "$ENTITLEMENTS" "$MACOS_DIR/architect"
+    codesign --force --sign "$SIGN_IDENTITY" --entitlements "$ENTITLEMENTS" "$MACOS_DIR/architect"
 
     echo "Signing ${APP_NAME}.app..."
-    codesign --force --sign - --entitlements "$ENTITLEMENTS" "$APP_DIR"
+    codesign --force --sign "$SIGN_IDENTITY" --entitlements "$ENTITLEMENTS" "$APP_DIR"
 
     echo "Code signing complete."
 else

@@ -81,6 +81,10 @@ pub const GridLayout = struct {
         if (count == 0) return .{ .cols = 1, .rows = 1 };
         if (count == 1) return .{ .cols = 1, .rows = 1 };
         if (count == 2) return .{ .cols = 2, .rows = 1 };
+        // 3 terminals lay out as a single horizontal row (3x1) rather than a
+        // 2x2 grid with an empty cell. The general search below caps cols at
+        // rows+1, so it would pick 2x2 for count=3 — hence this explicit case.
+        if (count == 3) return .{ .cols = 3, .rows = 1 };
 
         // Find smallest grid where cols >= rows and cols * rows >= count
         var rows: usize = 1;
@@ -238,9 +242,10 @@ test "calculateDimensions" {
     try std.testing.expectEqual(@as(usize, 2), GridLayout.calculateDimensions(2).cols);
     try std.testing.expectEqual(@as(usize, 1), GridLayout.calculateDimensions(2).rows);
 
-    // 3-4 terminals: 2x2
-    try std.testing.expectEqual(@as(usize, 2), GridLayout.calculateDimensions(3).cols);
-    try std.testing.expectEqual(@as(usize, 2), GridLayout.calculateDimensions(3).rows);
+    // 3 terminals: 3x1 (single horizontal row)
+    try std.testing.expectEqual(@as(usize, 3), GridLayout.calculateDimensions(3).cols);
+    try std.testing.expectEqual(@as(usize, 1), GridLayout.calculateDimensions(3).rows);
+    // 4 terminals: 2x2
     try std.testing.expectEqual(@as(usize, 2), GridLayout.calculateDimensions(4).cols);
     try std.testing.expectEqual(@as(usize, 2), GridLayout.calculateDimensions(4).rows);
 

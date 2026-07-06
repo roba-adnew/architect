@@ -59,7 +59,7 @@ def _post(ev):
 class Architect:
     """A launched, test-mode Architect instance you can drive and observe."""
 
-    def __init__(self, persist=False):
+    def __init__(self):
         self.dir = tempfile.mkdtemp(prefix="arch-e2e-")
         self.state_file = os.path.join(self.dir, "state.json")
         cfg = os.path.join(self.dir, "cfg")
@@ -74,10 +74,6 @@ class Architect:
         env["ARCHITECT_CONFIG_DIR"] = cfg
         self.opened_file = os.path.join(self.dir, "opened.txt")
         env["ARCHITECT_OPENED_URLS_FILE"] = self.opened_file
-        if persist:
-            env["ARCHITECT_PERSIST_SESSIONS"] = "1"
-        else:
-            env.pop("ARCHITECT_PERSIST_SESSIONS", None)
         self._log = open(os.path.join(self.dir, "stdout.log"), "w")
         self.proc = subprocess.Popen([binary], env=env, stdout=self._log, stderr=subprocess.STDOUT)
         self.wait_for(lambda s: s is not None, timeout=15, what="app to start and write state")

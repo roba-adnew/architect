@@ -62,18 +62,6 @@ if [ "$dry_run" = true ]; then
     STAGE_PARENT="$(mktemp -d)"
 fi
 
-# Carry the daily app's persistence opt-in forward, so a stage never downgrades
-# it out of tmux persistence (the --resume rewind fix). bundle-macos.sh bakes
-# ARCHITECT_PERSIST_SESSIONS into Info.plist from this env, because the
-# Finder-launched app doesn't inherit shell env. Mirrors dev-reload.sh.
-if [ -z "${ARCHITECT_PERSIST_SESSIONS:-}" ] && [ -f "$APP/Contents/Info.plist" ]; then
-    prev="$(/usr/libexec/PlistBuddy -c 'Print :LSEnvironment:ARCHITECT_PERSIST_SESSIONS' "$APP/Contents/Info.plist" 2>/dev/null || true)"
-    if [ "$prev" = "1" ] || [ "$prev" = "true" ]; then
-        export ARCHITECT_PERSIST_SESSIONS=1
-        echo "==> Inherited ARCHITECT_PERSIST_SESSIONS=1 from the installed bundle."
-    fi
-fi
-
 if [ "$build_debug" = true ]; then
     echo "==> Building Architect (Debug)..."
     zig build

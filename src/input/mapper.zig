@@ -9,7 +9,11 @@ pub fn fontSizeShortcut(key: c.SDL_Keycode, mod: c.SDL_Keymod) ?FontSizeDirectio
     if ((mod & c.SDL_KMOD_GUI) == 0) return null;
 
     return switch (key) {
-        c.SDLK_EQUALS, c.SDLK_KP_PLUS => if ((mod & c.SDL_KMOD_SHIFT) != 0) .increase else null,
+        // Main-row '+' is Shift+'='; the keypad '+' is unshifted, so it must not
+        // require Shift (it's its own key). Keeping them merged made Cmd+KP_Plus
+        // a no-op, which is what the plus/minus-variants test caught.
+        c.SDLK_EQUALS => if ((mod & c.SDL_KMOD_SHIFT) != 0) .increase else null,
+        c.SDLK_KP_PLUS => .increase,
         c.SDLK_MINUS, c.SDLK_KP_MINUS => .decrease,
         else => null,
     };

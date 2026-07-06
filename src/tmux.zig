@@ -7,9 +7,9 @@
 //! away from Architect's process tree, so quitting Architect — yours or the
 //! reload script's — only drops the client; the server + shell + agent live on.
 //!
-//! Gated behind `ARCHITECT_PERSIST_SESSIONS=1`. When disabled, or when tmux is
-//! not on PATH, `buildPersist` returns null and the caller spawns a direct shell
-//! exactly as before — so this is strictly non-breaking.
+//! On by default: whenever tmux is on PATH, `buildPersist` wraps the shell. When
+//! tmux is not installed it returns null and the caller spawns a direct shell
+//! exactly as before — so this degrades gracefully with no configuration.
 const std = @import("std");
 const posix = std.posix;
 
@@ -22,7 +22,10 @@ pub const Persist = struct {
     tmux_path: [:0]const u8,
     /// Private server socket, stable across restarts so reattach finds the session.
     socket_path: [:0]const u8,
-    /// Per-slot session name (`architect-<slot>`); `new-session -A` keys off this.
+    /// Session name (`architect-<persist_index>`); `new-session -A` keys off this.
+    /// The index MUST be a session's stable persist_index, not its mutable grid
+    /// slot_index — otherwise the name drifts as the grid reorders and a fresh
+    /// spawn can attach to (clone) a live session. See SessionState.persist_index.
     session_name: [:0]const u8,
     /// Config that makes tmux a transparent layer (no status bar, no keybindings).
     conf_path: [:0]const u8,
@@ -57,12 +60,6 @@ const conf_contents =
     \\set -g set-titles-string "#{pane_title}"
     \\
 ;
-
-/// Did the user opt into persistent sessions for this run?
-pub fn persistEnabled() bool {
-    const v = posix.getenv("ARCHITECT_PERSIST_SESSIONS") orelse return false;
-    return std.mem.eql(u8, v, "1") or std.mem.eql(u8, v, "true");
-}
 
 /// Allocate a null-terminated formatted string. Caller owns the result.
 /// Uses a manual len+1 buffer (not allocSentinel) so freeing the returned
@@ -186,14 +183,13 @@ fn refreshRunningServer(allocator: std.mem.Allocator, tmux_path: [:0]const u8, s
     _ = feat.spawnAndWait() catch return;
 }
 
-/// Build persist options for a session slot, or null if persistence is disabled
+/// Build persist options keyed off a session's STABLE persist_index (not the
+/// mutable grid slot_index), or null if persistence is disabled
 /// or unavailable (tmux not found). On any partial failure, frees what it
 /// allocated and returns null so the caller falls back to a direct shell spawn.
-pub fn buildPersist(allocator: std.mem.Allocator, slot_index: usize) ?Persist {
-    if (!persistEnabled()) return null;
-
+pub fn buildPersist(allocator: std.mem.Allocator, persist_index: usize) ?Persist {
     const tmux_path = findOnPath(allocator, "tmux") orelse {
-        log.warn("ARCHITECT_PERSIST_SESSIONS set but tmux not found on PATH; using direct shell", .{});
+        log.info("tmux not found on PATH; session persistence off, using direct shell", .{});
         return null;
     };
     errdefer allocator.free(tmux_path);
@@ -203,7 +199,7 @@ pub fn buildPersist(allocator: std.mem.Allocator, slot_index: usize) ?Persist {
     errdefer allocator.free(socket_path);
     const conf_path = allocZ(allocator, "{s}/architect-tmux.conf", .{dir}) catch return null;
     errdefer allocator.free(conf_path);
-    const session_name = allocZ(allocator, "architect-{d}", .{slot_index}) catch return null;
+    const session_name = allocZ(allocator, "architect-{d}", .{persist_index}) catch return null;
     errdefer allocator.free(session_name);
 
     writeConf(conf_path) catch |err| {
@@ -246,8 +242,7 @@ pub fn freePersist(allocator: std.mem.Allocator, p: Persist) void {
 /// mouse-wheel cadence; if trackpad momentum feels laggy, coalesce ticks or
 /// detach the spawn (double-fork). Also: while scrolled up the pane sits in tmux
 /// copy-mode, so keystrokes are captured until you scroll back to the bottom.
-pub fn scrollHistory(allocator: std.mem.Allocator, slot_index: usize, lines: u16, up: bool) void {
-    if (!persistEnabled()) return;
+pub fn scrollHistory(allocator: std.mem.Allocator, persist_index: usize, lines: u16, up: bool) void {
     if (lines == 0) return;
 
     const tmux_path = findOnPath(allocator, "tmux") orelse return;
@@ -256,7 +251,7 @@ pub fn scrollHistory(allocator: std.mem.Allocator, slot_index: usize, lines: u16
     const dir = runtimeDir();
     const socket_path = allocZ(allocator, "{s}/architect-tmux.sock", .{dir}) catch return;
     defer allocator.free(socket_path);
-    const target = allocZ(allocator, "architect-{d}", .{slot_index}) catch return;
+    const target = allocZ(allocator, "architect-{d}", .{persist_index}) catch return;
     defer allocator.free(target);
 
     var count_buf: [8]u8 = undefined;
@@ -282,16 +277,14 @@ pub fn scrollHistory(allocator: std.mem.Allocator, slot_index: usize, lines: u16
 /// keystroke afterward should snap back to the live prompt. Called from
 /// `SessionState.sendInput`; spawnAndWait so copy-mode is gone before the keystroke
 /// is written to the PTY (otherwise the key would drive the scroll instead).
-pub fn cancelCopyMode(allocator: std.mem.Allocator, slot_index: usize) void {
-    if (!persistEnabled()) return;
-
+pub fn cancelCopyMode(allocator: std.mem.Allocator, persist_index: usize) void {
     const tmux_path = findOnPath(allocator, "tmux") orelse return;
     defer allocator.free(tmux_path);
 
     const dir = runtimeDir();
     const socket_path = allocZ(allocator, "{s}/architect-tmux.sock", .{dir}) catch return;
     defer allocator.free(socket_path);
-    const target = allocZ(allocator, "architect-{d}", .{slot_index}) catch return;
+    const target = allocZ(allocator, "architect-{d}", .{persist_index}) catch return;
     defer allocator.free(target);
 
     var child = std.process.Child.init(&[_][]const u8{
@@ -308,16 +301,14 @@ pub fn cancelCopyMode(allocator: std.mem.Allocator, slot_index: usize) void {
 /// this through Architect's PTY foreground pgrp — for a tmux-backed pane that's
 /// always the tmux client, never the agent — so it asks tmux directly via
 /// `#{pane_current_command}`. Best-effort: returns false if tmux can't be queried.
-pub fn paneHasForegroundCommand(allocator: std.mem.Allocator, slot_index: usize) bool {
-    if (!persistEnabled()) return false;
-
+pub fn paneHasForegroundCommand(allocator: std.mem.Allocator, persist_index: usize) bool {
     const tmux_path = findOnPath(allocator, "tmux") orelse return false;
     defer allocator.free(tmux_path);
 
     const dir = runtimeDir();
     const socket_path = allocZ(allocator, "{s}/architect-tmux.sock", .{dir}) catch return false;
     defer allocator.free(socket_path);
-    const target = allocZ(allocator, "architect-{d}", .{slot_index}) catch return false;
+    const target = allocZ(allocator, "architect-{d}", .{persist_index}) catch return false;
     defer allocator.free(target);
 
     const result = std.process.Child.run(.{
@@ -344,16 +335,14 @@ pub fn paneHasForegroundCommand(allocator: std.mem.Allocator, slot_index: usize)
 /// tmux client, whose own process cwd is frozen wherever it was spawned, so
 /// reading it (getCwd) reports the wrong directory; ask tmux for the pane path
 /// instead. Caller owns the returned slice; null if tmux can't be queried.
-pub fn panePath(allocator: std.mem.Allocator, slot_index: usize) ?[]u8 {
-    if (!persistEnabled()) return null;
-
+pub fn panePath(allocator: std.mem.Allocator, persist_index: usize) ?[]u8 {
     const tmux_path = findOnPath(allocator, "tmux") orelse return null;
     defer allocator.free(tmux_path);
 
     const dir = runtimeDir();
     const socket_path = allocZ(allocator, "{s}/architect-tmux.sock", .{dir}) catch return null;
     defer allocator.free(socket_path);
-    const target = allocZ(allocator, "architect-{d}", .{slot_index}) catch return null;
+    const target = allocZ(allocator, "architect-{d}", .{persist_index}) catch return null;
     defer allocator.free(target);
 
     const result = std.process.Child.run(.{
@@ -384,16 +373,14 @@ pub fn panePath(allocator: std.mem.Allocator, slot_index: usize) ?[]u8 {
 /// clients: a visible terminal's session is always attached by its client, so
 /// this can never kill a live pane even if the slot bookkeeping is momentarily
 /// off. No-op if the session doesn't exist or is attached. Best-effort.
-pub fn discardOrphanSession(allocator: std.mem.Allocator, slot_index: usize) void {
-    if (!persistEnabled()) return;
-
+pub fn discardOrphanSession(allocator: std.mem.Allocator, persist_index: usize) void {
     const tmux_path = findOnPath(allocator, "tmux") orelse return;
     defer allocator.free(tmux_path);
 
     const dir = runtimeDir();
     const socket_path = allocZ(allocator, "{s}/architect-tmux.sock", .{dir}) catch return;
     defer allocator.free(socket_path);
-    const target = allocZ(allocator, "architect-{d}", .{slot_index}) catch return;
+    const target = allocZ(allocator, "architect-{d}", .{persist_index}) catch return;
     defer allocator.free(target);
 
     // Only proceed if the session exists AND is detached (#{session_attached} == 0).

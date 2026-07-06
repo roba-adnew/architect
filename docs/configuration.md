@@ -17,23 +17,23 @@ its own state without resuming or clobbering the daily app's sessions — see
 | Variable | Effect |
 |----------|--------|
 | `ARCHITECT_CONFIG_DIR` | Relocates `config.toml` + `persistence.toml` to the given directory (overrides `~/.config/architect/`). |
-| `ARCHITECT_PERSIST_SESSIONS` | `1`/`true` enables **persistent agent sessions** (opt-in, experimental). |
 
-### Persistent agent sessions (`ARCHITECT_PERSIST_SESSIONS`)
+### Persistent agent sessions
 
-When set to `1`, Architect spawns each shell inside a detached **tmux** session
-(requires `tmux` on `PATH`) instead of as a direct child process. The tmux server
-outlives Architect, so quitting and relaunching Architect — or a crash, or the
-reload script — reattaches to the *same live shell* with the agent's full
+On by default (experimental): whenever `tmux` is on `PATH`, Architect spawns each
+shell inside a detached **tmux** session instead of as a direct child process. The
+tmux server outlives Architect, so quitting and relaunching Architect — or a crash,
+or the reload script — reattaches to the *same live shell* with the agent's full
 in-memory context intact, instead of killing the agent and resuming it from a
 local transcript that can be stale (the bridged-resume "rewind"). See ADR-015 in
 `docs/ARCHITECTURE.md` for the full design.
 
 - **State location:** a private tmux socket and config live in
   `${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/architect-tmux.sock` and `…/architect-tmux.conf`.
-  Sessions are named `architect-<slot>`. List them with
-  `tmux -S <socket> ls`; kill a stuck one with `tmux -S <socket> kill-session -t architect-<slot>`.
-- **Non-breaking:** unset (the default) spawns a direct shell exactly as before.
+  Sessions are named `architect-<n>`. List them with
+  `tmux -S <socket> ls`; kill a stuck one with `tmux -S <socket> kill-session -t architect-<n>`.
+- **Automatic fallback:** if `tmux` isn't installed, Architect spawns a direct
+  shell exactly as before — no configuration needed.
 - **Known limitations (phase 1):** the attention/approval border may not light up
   on a *reattached* agent; deep scrollback above the visible screen is not
   reconstructed on reattach (the conversation state is intact); a full machine
@@ -73,7 +73,7 @@ The grid size is dynamic and adjusts automatically based on the number of termin
 - Press `Cmd+N` to add a new terminal after the currently focused one — the grid expands to accommodate it
 - Press `Cmd+W` to close a terminal — remaining terminals compact forward to fill gaps and the grid shrinks when possible; if it's the only terminal, it restarts in place (use `Cmd+Q` or the window close button to quit)
 - When only one terminal is spawned, the view stays in full-screen mode
-- Grid layout maintains `columns >= rows` (e.g., 1x1 → 2x1 → 2x2 → 3x2 → 3x3 → ...)
+- Grid layout maintains `columns >= rows` (e.g., 1x1 → 2x1 → 3x1 → 2x2 → 3x2 → 3x3 → ...); 3 terminals lay out as a single horizontal row
 - Maximum grid size is 12×12 (144 terminals)
 
 ### Window Configuration

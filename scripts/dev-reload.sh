@@ -100,26 +100,6 @@ if [ -n "${DEV_RELOAD_BUILD_ONLY:-}" ]; then
     exit 0
 fi
 
-# Preserve the daily app's persistence opt-in across reloads. ADR-015's
-# tmux-backed persistence (the rewind-bug fix) only takes effect if
-# ARCHITECT_PERSIST_SESSIONS is in the BUILD env: bundle-macos.sh bakes it into
-# Info.plist (LSEnvironment) because the app is launched via Finder/open and
-# does NOT inherit shell env. A "naked" reload that forgot the var would strip
-# the opt-in from the new bundle and silently resurrect the rewind. So if the
-# caller didn't set it, inherit whatever the currently-installed bundle had.
-# ponytail: only carries forward an already-installed opt-in; a fresh machine
-# still needs the explicit var (or `pushreload`) to turn persistence on.
-if [ -z "${ARCHITECT_PERSIST_SESSIONS:-}" ]; then
-    installed_plist="/Applications/Architect.app/Contents/Info.plist"
-    if [ -f "$installed_plist" ]; then
-        prev="$(/usr/libexec/PlistBuddy -c 'Print :LSEnvironment:ARCHITECT_PERSIST_SESSIONS' "$installed_plist" 2>/dev/null || true)"
-        if [ "$prev" = "1" ] || [ "$prev" = "true" ]; then
-            export ARCHITECT_PERSIST_SESSIONS=1
-            echo "==> Inherited ARCHITECT_PERSIST_SESSIONS=1 from the installed bundle (persistence stays on)."
-        fi
-    fi
-fi
-
 echo "==> Packaging app bundle..."
 staging="$(mktemp -d)"
 trap 'rm -rf "$staging"' EXIT

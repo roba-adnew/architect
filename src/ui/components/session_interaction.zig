@@ -557,7 +557,7 @@ pub const SessionInteractionComponent = struct {
                                 // ghostty-vt's scrollback is empty — drive tmux copy-mode
                                 // out-of-band. Works the same in grid and focus view.
                                 const lines: u16 = @intCast(@min(@abs(scroll_delta), 100));
-                                tmux.scrollHistory(self.allocator, session.slot_index, lines, scroll_delta < 0);
+                                tmux.scrollHistory(self.allocator, session.persist_index, lines, scroll_delta < 0);
                                 // Pane is now in modal copy-mode; the next keystroke (sendInput)
                                 // cancels it so the cursor returns to the live prompt.
                                 session.scrolled_in_copy_mode = true;

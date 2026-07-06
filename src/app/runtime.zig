@@ -3826,26 +3826,34 @@ test "compactSessions parks hidden sessions at the tail" {
     // 5 slots: visible(id2), hidden(id0), visible(id1), free, free. After compaction
     // the visible sessions must pack to the front in id order and the hidden session
     // must move to the tail, leaving the cells between them free for new terminals.
+    // persist_index seeds the physical creation order (0..4); it must survive
+    // compaction unchanged even though slot_index gets rewritten to the new
+    // position. That stability is what keeps each live pane's tmux name pinned.
     var s_v2: SessionState = undefined;
     s_v2.spawned = true;
     s_v2.hidden = false;
     s_v2.id = 2;
+    s_v2.persist_index = 0;
     var s_h0: SessionState = undefined;
     s_h0.spawned = true;
     s_h0.hidden = true;
     s_h0.id = 0;
+    s_h0.persist_index = 1;
     var s_v1: SessionState = undefined;
     s_v1.spawned = true;
     s_v1.hidden = false;
     s_v1.id = 1;
+    s_v1.persist_index = 2;
     var s_e3: SessionState = undefined;
     s_e3.spawned = false;
     s_e3.hidden = false;
     s_e3.id = 3;
+    s_e3.persist_index = 3;
     var s_e4: SessionState = undefined;
     s_e4.spawned = false;
     s_e4.hidden = false;
     s_e4.id = 4;
+    s_e4.persist_index = 4;
     var sessions = [_]*SessionState{ &s_v2, &s_h0, &s_v1, &s_e3, &s_e4 };
 
     var views: [5]SessionViewState = undefined;
@@ -3867,6 +3875,17 @@ test "compactSessions parks hidden sessions at the tail" {
     // The hidden session is parked at the tail, out of the grid's cell range.
     try std.testing.expect(sessions[4].hidden and sessions[4].spawned);
     try std.testing.expectEqual(@as(usize, 0), sessions[4].id);
+
+    // persist_index is NEVER rewritten by compaction — it stays bound to the
+    // object (its creation-order id), even as slot_index moves to the new
+    // position. This is the invariant that stops a fresh tmux spawn from reusing
+    // a live session's `architect-<n>` name and cloning it.
+    try std.testing.expectEqual(@as(usize, 2), sessions[0].persist_index); // s_v1
+    try std.testing.expectEqual(@as(usize, 0), sessions[0].slot_index);
+    try std.testing.expectEqual(@as(usize, 0), sessions[1].persist_index); // s_v2
+    try std.testing.expectEqual(@as(usize, 1), sessions[1].slot_index);
+    try std.testing.expectEqual(@as(usize, 1), sessions[4].persist_index); // s_h0
+    try std.testing.expectEqual(@as(usize, 4), sessions[4].slot_index);
 }
 
 test "agentLabel reports the detected agent name or 'none'" {
