@@ -50,6 +50,7 @@ Architect solves this with a grid view that keeps all your agents visible, with 
 - Per-cell cwd bar in grid view reserves space, and terminal dimensions track grid/full mode so content wraps inside the visible area
 - Scrollback with trackpad/wheel support and an auto-hiding draggable scrollbar in terminal views
 - OSC 8 hyperlink support (Cmd+Click to open)
+- Text selection & clipboard: drag to select (double-click a word, triple-click a line), ⌘C to copy, ⌘V to paste, and right-click to paste. Inside programs that capture the mouse (Claude, vim, pagers), hold ⇧ while dragging to select locally instead of forwarding the mouse to the program
 - Replies to OSC 4/10/11 color queries using the live terminal palette/default colors so Codex and similar CLIs do not stall on startup probes
 - Kitty keyboard protocol for enhanced key handling
 - Persistent window state and font size across sessions

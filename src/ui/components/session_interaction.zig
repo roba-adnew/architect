@@ -221,14 +221,32 @@ pub const SessionInteractionComponent = struct {
                     if (focused.spawned and focused.terminal != null) {
                         const terminal = &focused.terminal.?;
 
-                        // Double-click in a focused pane always returns to grid,
-                        // even when the focused program (Claude/vim/pagers) has
-                        // mouse reporting on. Checked BEFORE the mouse-tracking
-                        // forward below, otherwise the program swallows the
-                        // double-click as a text selection and there's no mouse
-                        // path back to the grid. Single clicks and drags still
-                        // forward. Mirrors grid-view double-click-to-zoom.
-                        if (event.button.button == c.SDL_BUTTON_LEFT and event.button.clicks == 2) {
+                        // Shift bypasses the focused program's mouse reporting so
+                        // text selection works locally even inside Claude/vim/pagers
+                        // (standard terminal behavior — iTerm/Ghostty/kitty/xterm all
+                        // do this). Without it, the mouse-tracking forward below
+                        // swallows every click/drag and no selection is ever made,
+                        // so Cmd+C has nothing to copy.
+                        const shift_held = (c.SDL_GetModState() & c.SDL_KMOD_SHIFT) != 0;
+
+                        // Right-click pastes the clipboard (PuTTY/xterm-style),
+                        // regardless of the program's mouse mode. Handled before the
+                        // mouse-tracking forward so it never reaches the program.
+                        if (event.button.button == c.SDL_BUTTON_RIGHT) {
+                            actions.append(.PasteIntoFocused) catch |err| {
+                                log.warn("failed to queue paste action: {}", .{err});
+                            };
+                            return true;
+                        }
+
+                        // Double-click in a focused pane returns to grid, even when
+                        // the focused program (Claude/vim/pagers) has mouse reporting
+                        // on. Checked BEFORE the mouse-tracking forward below,
+                        // otherwise the program swallows the double-click and there's
+                        // no mouse path back to the grid. Shift+double-click instead
+                        // word-selects (see the Shift bypass above). Single clicks and
+                        // drags still forward. Mirrors grid-view double-click-to-zoom.
+                        if (!shift_held and event.button.button == c.SDL_BUTTON_LEFT and event.button.clicks == 2) {
                             actions.append(.RequestCollapseFocused) catch |err| {
                                 log.warn("failed to queue collapse action: {}", .{err});
                             };
@@ -259,7 +277,7 @@ pub const SessionInteractionComponent = struct {
                             }
                         }
 
-                        if (terminalHasMouseTracking(terminal) and !view.is_viewing_scrollback) {
+                        if (forwardMouseToProgram(terminalHasMouseTracking(terminal), view.is_viewing_scrollback, shift_held)) {
                             if (sdlToMouseButton(event.button.button)) |btn| {
                                 if (fullViewCellFromMouse(mouse_x, mouse_y, host.window_w, host.window_h, self.font, host.term_cols, host.term_rows, host.ui_scale)) |cell| {
                                     const sgr = terminal.modes.get(.mouse_format_sgr);
@@ -304,9 +322,25 @@ pub const SessionInteractionComponent = struct {
                     const focused = self.sessions[focused_idx];
                     const view = &self.views[focused_idx];
 
+                    // Right-click paste (button-down) is fully consumed there;
+                    // swallow its release too so the program never sees a dangling
+                    // right-button event.
+                    if (event.button.button == c.SDL_BUTTON_RIGHT) return true;
+
+                    // A local Shift-selection was made without forwarding the press,
+                    // so don't forward the release either — end the selection locally.
+                    // The screen selection persists for Cmd+C; only the drag-state
+                    // flags reset.
+                    if (event.button.button == c.SDL_BUTTON_LEFT and
+                        (view.selection_dragging or view.selection_pending))
+                    {
+                        endSelection(view);
+                        return true;
+                    }
+
                     if (focused.spawned and focused.terminal != null) {
                         const terminal = &focused.terminal.?;
-                        if (terminalHasMouseTracking(terminal) and !view.is_viewing_scrollback) {
+                        if (forwardMouseToProgram(terminalHasMouseTracking(terminal), view.is_viewing_scrollback, false)) {
                             if (sdlToMouseButton(event.button.button)) |btn| {
                                 const mouse_x: c_int = @intFromFloat(event.button.x);
                                 const mouse_y: c_int = @intFromFloat(event.button.y);
@@ -368,7 +402,11 @@ pub const SessionInteractionComponent = struct {
                             // mode (DECSET 1003, e.g. Claude Code) swallows every
                             // motion event and links never underline on Cmd-hover.
                             const cmd_held = (c.SDL_GetModState() & c.SDL_KMOD_GUI) != 0;
-                            if (!cmd_held and (any_tracking or (btn_tracking and btn_held))) {
+                            // Shift bypasses mouse reporting so a Shift+drag selection
+                            // runs locally instead of being forwarded to the program
+                            // (matches the button-down/up bypass above).
+                            const shift_held = (c.SDL_GetModState() & c.SDL_KMOD_SHIFT) != 0;
+                            if (!cmd_held and !shift_held and (any_tracking or (btn_tracking and btn_held))) {
                                 if (fullViewCellFromMouse(mouse_x, mouse_y, host.window_w, host.window_h, self.font, host.term_cols, host.term_rows, host.ui_scale)) |cell| {
                                     const held_btn: ?input.MouseButton = if ((event.motion.state & c.SDL_BUTTON_LMASK) != 0)
                                         .left
@@ -793,6 +831,15 @@ fn terminalHasMouseTracking(terminal: anytype) bool {
         terminal.modes.get(.mouse_event_button) or
         terminal.modes.get(.mouse_event_any) or
         terminal.modes.get(.mouse_event_x10);
+}
+
+/// Whether a mouse button event should be forwarded to the focused program's
+/// mouse reporting instead of handled locally as a text selection. Holding
+/// Shift bypasses reporting so drag-select works even inside programs that grab
+/// the mouse (Claude/vim/pagers) — standard terminal behavior. Scrollback view
+/// is always local (no live program owns it).
+fn forwardMouseToProgram(has_mouse_tracking: bool, viewing_scrollback: bool, shift_held: bool) bool {
+    return has_mouse_tracking and !viewing_scrollback and !shift_held;
 }
 
 fn sdlToMouseButton(sdl_button: u8) ?input.MouseButton {
@@ -1588,6 +1635,17 @@ test "gridClickOutcome: single open window cannot be double-clicked into focus" 
     // on the focused pane, never a zoom.
     try testing.expectEqual(GridClickOutcome.none, gridClickOutcome(2, 0, 0, 1));
     try testing.expectEqual(GridClickOutcome.none, gridClickOutcome(3, 0, 0, 1));
+}
+
+test "forwardMouseToProgram: Shift bypasses mouse reporting so drag-select stays local" {
+    // No tracking -> always local (a plain shell prompt).
+    try testing.expect(!forwardMouseToProgram(false, false, false));
+    // Program grabs the mouse, no Shift -> forward to it (normal mouse mode).
+    try testing.expect(forwardMouseToProgram(true, false, false));
+    // Program grabs the mouse, Shift held -> stay local so Cmd+C has a selection.
+    try testing.expect(!forwardMouseToProgram(true, false, true));
+    // Viewing scrollback -> always local, no live program owns it.
+    try testing.expect(!forwardMouseToProgram(true, true, false));
 }
 
 test "cellCodepoint honors content_tag for text and non-text cells" {

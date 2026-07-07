@@ -3198,6 +3198,25 @@ pub fn run() !void {
                     std.debug.print("UI requested collapse of focused session: {d}\n", .{anim_state.focused_session});
                 }
             },
+            .PasteIntoFocused => {
+                // Same paste path as Cmd+V: try image passthrough first (opt-in),
+                // then fall back to text.
+                if (anim_state.focused_session < sessions.len) {
+                    const focused = sessions[anim_state.focused_session];
+                    var handled_paste = false;
+                    if (config.paste.image_passthrough) {
+                        handled_paste = terminal_actions.tryPasteImagePassthrough(focused, allocator, &ui, now, session_interaction_component) catch |err| blk: {
+                            std.debug.print("Image paste passthrough failed: {}\n", .{err});
+                            break :blk false;
+                        };
+                    }
+                    if (!handled_paste) {
+                        terminal_actions.pasteClipboardIntoSession(focused, allocator, &ui, now, session_interaction_component) catch |err| {
+                            std.debug.print("Paste failed: {}\n", .{err});
+                        };
+                    }
+                }
+            },
             .ConfirmQuit => {
                 if (!quit_teardown.active) {
                     if (startQuitFlow(&quit_teardown, sessions[0..], quit_blocking_overlay_component)) {

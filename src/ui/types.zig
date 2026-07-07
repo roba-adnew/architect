@@ -77,6 +77,10 @@ pub const UiAction = union(enum) {
     /// and bring it back into the grid.
     RevealHiddenTerminal: usize,
     RequestCollapseFocused: void,
+    /// Right-click on a focused terminal: paste the clipboard into it
+    /// (PuTTY/xterm-style). Routed as an action so the paste path (image
+    /// passthrough + text) stays owned by runtime, same as Cmd+V.
+    PasteIntoFocused: void,
     ConfirmQuit: void,
     OpenConfig: void,
     SwitchWorktree: SwitchWorktreeAction,
