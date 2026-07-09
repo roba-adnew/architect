@@ -25,7 +25,7 @@ const Rect = geom.Rect;
 const AnimationState = app_state.AnimationState;
 const GridLayout = grid_layout.GridLayout;
 
-const attention_thickness: c_int = 6;
+const attention_thickness: c_int = 3;
 
 /// Set once per frame at the top of render(); read by the overlay helpers so the
 /// selected pane's border is solid when Architect is focused and dashed when it's
