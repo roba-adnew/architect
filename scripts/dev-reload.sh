@@ -37,7 +37,13 @@ reload_has_live_agents() {
     while IFS= read -r k; do
         [ -n "$k" ] || continue
         args="$(ps -p "$k" -o args= 2>/dev/null || true)"
+        # Skip tmux clients: their argv embeds the pane's ARCHITECT_RESUME_CMD
+        # ("claude --resume ...") and false-positives this guard. They are never
+        # agents themselves, and tmux-backed agents live under the tmux SERVER
+        # (not our tree) and survive a reload by design — reattach re-adopts
+        # them. This guard only needs to protect direct (non-tmux) shells.
         case "$args" in
+            *tmux*) continue ;;
             *claude*|*codex*|*gemini*) return 0 ;;
         esac
         reload_has_live_agents "$k" && return 0
