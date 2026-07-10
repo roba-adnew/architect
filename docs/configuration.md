@@ -30,8 +30,13 @@ local transcript that can be stale (the bridged-resume "rewind"). See ADR-015 in
 
 - **State location:** a private tmux socket and config live in
   `${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/architect-tmux.sock` and `…/architect-tmux.conf`.
-  Sessions are named `architect-<n>`. List them with
-  `tmux -S <socket> ls`; kill a stuck one with `tmux -S <socket> kill-session -t architect-<n>`.
+  Sessions are named `architect-<epoch>-<n>`, where `<epoch>` is a random
+  per-install token (`persist_epoch` in `persistence.toml`) that keeps this
+  install's session names disjoint from other installs' and from older fossils on
+  the shared socket. List them with `tmux -S <socket> ls`; kill a stuck one with
+  `tmux -S <socket> kill-session -t architect-<epoch>-<n>`. At startup Architect
+  reattaches to its own sessions and then reaps every remaining *detached* session
+  on the socket, so leftovers from crashes or closed terminals don't accumulate.
 - **Automatic fallback:** if `tmux` isn't installed, Architect spawns a direct
   shell exactly as before — no configuration needed.
 - **Known limitations (phase 1):** the attention/approval border may not light up
@@ -299,6 +304,7 @@ Auto-managed runtime state. Do not edit manually unless troubleshooting.
 
 ```toml
 font_size = 14
+persist_epoch = "a3f1c09b7e5d2648"
 
 terminals = [
   "/Users/me/projects/app",
@@ -331,6 +337,7 @@ y = 50
 | Field | Description |
 |-------|-------------|
 | `font_size` | Current font size (adjusted with `Cmd++`/`Cmd+-`) |
+| `persist_epoch` | Random per-install token (16 hex chars) minted on first launch and mixed into tmux session names (`architect-<epoch>-<n>`) so this install never reattaches to another install's — or an old fossil's — session on the shared socket. Do not edit; deleting it just mints a fresh one (and abandons the current run's live tmux sessions). |
 | `terminals` | Working directories for each terminal (ordered by session index) |
 | `terminal_agent_types` | Agent type for each terminal slot (`"claude"`, `"codex"`, `"gemini"`), or an empty string (`""`) when absent. Present only when at least one terminal had a running agent at quit time. |
 | `terminal_session_ids` | Session UUID for each terminal slot, or an empty string (`""`) when absent. Written alongside `terminal_agent_types` when an agent session ID was captured at quit. On next launch, Architect writes the corresponding resume command (e.g., `claude --resume <uuid>`) to the terminal as soon as the shell is ready. |
@@ -346,7 +353,7 @@ On launch, Architect restores terminals to their saved working directories. The 
 
 Note: Terminal cwd persistence and agent session resumption are currently macOS-only.
 
-Older `persistence.toml` files that used the `[terminals]` table or `recent_folders` array are migrated automatically. Files without `terminal_agent_types` / `terminal_session_ids` / `terminal_hidden` are loaded normally (no agent resumption, all terminals visible).
+Older `persistence.toml` files that used the `[terminals]` table or `recent_folders` array are migrated automatically. Files without `terminal_agent_types` / `terminal_session_ids` / `terminal_hidden` are loaded normally (no agent resumption, all terminals visible). Files without `persist_epoch` get one minted and saved on first launch.
 
 ## Resetting Configuration
 

@@ -22,10 +22,13 @@ pub const Persist = struct {
     tmux_path: [:0]const u8,
     /// Private server socket, stable across restarts so reattach finds the session.
     socket_path: [:0]const u8,
-    /// Session name (`architect-<persist_index>`); `new-session -A` keys off this.
-    /// The index MUST be a session's stable persist_index, not its mutable grid
-    /// slot_index — otherwise the name drifts as the grid reorders and a fresh
-    /// spawn can attach to (clone) a live session. See SessionState.persist_index.
+    /// Session name (`architect-<epoch>-<persist_index>`); `new-session -A` keys
+    /// off this. The index MUST be a session's stable persist_index, not its
+    /// mutable grid slot_index — otherwise the name drifts as the grid reorders
+    /// and a fresh spawn can attach to (clone) a live session. The <epoch> makes
+    /// names disjoint per install so a new run never reattaches to another run's
+    /// leftover session on the shared socket. See SessionState.persist_index and
+    /// config.Persistence.persist_epoch.
     session_name: [:0]const u8,
     /// Config that makes tmux a transparent layer (no status bar, no keybindings).
     conf_path: [:0]const u8,
@@ -116,6 +119,35 @@ fn trimTrailingSlash(d: []const u8) []const u8 {
     return d;
 }
 
+// ponytail: process-wide singleton for the persist epoch. It is one constant for
+// the whole run (the loaded persistence.persist_epoch), so threading it through
+// every tmux call's signature would be noise. Set once at startup via setEpoch,
+// read by sessionName. Fixed buffer -> no alloc, no lifetime coupling to the
+// Persistence object. Empty until set (then names fall back to the legacy form).
+var epoch_buf: [64]u8 = undefined;
+var epoch_len: usize = 0;
+
+/// Record the per-install epoch mixed into every tmux session name. Call once,
+/// before any session spawns. See config.Persistence.persist_epoch.
+pub fn setEpoch(epoch: []const u8) void {
+    const n = @min(epoch.len, epoch_buf.len);
+    @memcpy(epoch_buf[0..n], epoch[0..n]);
+    epoch_len = n;
+}
+
+/// Build a session name `architect-<epoch>-<index>` (or the legacy
+/// `architect-<index>` when no epoch is set). Caller owns the result.
+fn sessionName(allocator: std.mem.Allocator, persist_index: usize) ?[:0]u8 {
+    const built = if (epoch_len == 0)
+        allocZ(allocator, "architect-{d}", .{persist_index})
+    else
+        allocZ(allocator, "architect-{s}-{d}", .{ epoch_buf[0..epoch_len], persist_index });
+    return built catch |err| {
+        log.warn("sessionName: alloc failed for index {d}: {}", .{ persist_index, err });
+        return null;
+    };
+}
+
 fn writeConf(path: [:0]const u8) !void {
     const file = try std.fs.cwd().createFileZ(path, .{ .truncate = true });
     defer file.close();
@@ -199,7 +231,7 @@ pub fn buildPersist(allocator: std.mem.Allocator, persist_index: usize) ?Persist
     errdefer allocator.free(socket_path);
     const conf_path = allocZ(allocator, "{s}/architect-tmux.conf", .{dir}) catch return null;
     errdefer allocator.free(conf_path);
-    const session_name = allocZ(allocator, "architect-{d}", .{persist_index}) catch return null;
+    const session_name = sessionName(allocator, persist_index) orelse return null;
     errdefer allocator.free(session_name);
 
     writeConf(conf_path) catch |err| {
@@ -251,7 +283,7 @@ pub fn scrollHistory(allocator: std.mem.Allocator, persist_index: usize, lines: 
     const dir = runtimeDir();
     const socket_path = allocZ(allocator, "{s}/architect-tmux.sock", .{dir}) catch return;
     defer allocator.free(socket_path);
-    const target = allocZ(allocator, "architect-{d}", .{persist_index}) catch return;
+    const target = sessionName(allocator, persist_index) orelse return;
     defer allocator.free(target);
 
     var count_buf: [8]u8 = undefined;
@@ -284,7 +316,7 @@ pub fn cancelCopyMode(allocator: std.mem.Allocator, persist_index: usize) void {
     const dir = runtimeDir();
     const socket_path = allocZ(allocator, "{s}/architect-tmux.sock", .{dir}) catch return;
     defer allocator.free(socket_path);
-    const target = allocZ(allocator, "architect-{d}", .{persist_index}) catch return;
+    const target = sessionName(allocator, persist_index) orelse return;
     defer allocator.free(target);
 
     var child = std.process.Child.init(&[_][]const u8{
@@ -308,7 +340,7 @@ pub fn paneHasForegroundCommand(allocator: std.mem.Allocator, persist_index: usi
     const dir = runtimeDir();
     const socket_path = allocZ(allocator, "{s}/architect-tmux.sock", .{dir}) catch return false;
     defer allocator.free(socket_path);
-    const target = allocZ(allocator, "architect-{d}", .{persist_index}) catch return false;
+    const target = sessionName(allocator, persist_index) orelse return false;
     defer allocator.free(target);
 
     const result = std.process.Child.run(.{
@@ -342,7 +374,7 @@ pub fn panePath(allocator: std.mem.Allocator, persist_index: usize) ?[]u8 {
     const dir = runtimeDir();
     const socket_path = allocZ(allocator, "{s}/architect-tmux.sock", .{dir}) catch return null;
     defer allocator.free(socket_path);
-    const target = allocZ(allocator, "architect-{d}", .{persist_index}) catch return null;
+    const target = sessionName(allocator, persist_index) orelse return null;
     defer allocator.free(target);
 
     const result = std.process.Child.run(.{
@@ -380,7 +412,7 @@ pub fn discardOrphanSession(allocator: std.mem.Allocator, persist_index: usize) 
     const dir = runtimeDir();
     const socket_path = allocZ(allocator, "{s}/architect-tmux.sock", .{dir}) catch return;
     defer allocator.free(socket_path);
-    const target = allocZ(allocator, "architect-{d}", .{persist_index}) catch return;
+    const target = sessionName(allocator, persist_index) orelse return;
     defer allocator.free(target);
 
     // Only proceed if the session exists AND is detached (#{session_attached} == 0).
@@ -406,6 +438,59 @@ pub fn discardOrphanSession(allocator: std.mem.Allocator, persist_index: usize) 
     child.stdout_behavior = .Ignore;
     child.stderr_behavior = .Ignore;
     _ = child.spawnAndWait() catch return;
+}
+
+/// Drain the session graveyard at startup. The shared socket accumulates a
+/// detached session for every terminal that ever ran and was never reattached
+/// (crashed instances, closed terminals, pre-epoch fossils), so it grows without
+/// bound — dozens piled up in practice. Call ONCE, AFTER this run has reattached
+/// to all of its own sessions (so they hold a client and read as attached): kill
+/// every DETACHED session on the socket. Attached sessions — ours and any other
+/// live instance's — are spared, so this can't nuke a running pane. Best-effort:
+/// any failure is a silent no-op. See config.Persistence.persist_epoch.
+pub fn reapDetachedSessions(allocator: std.mem.Allocator) void {
+    const tmux_path = findOnPath(allocator, "tmux") orelse return;
+    defer allocator.free(tmux_path);
+
+    const dir = runtimeDir();
+    const socket_path = allocZ(allocator, "{s}/architect-tmux.sock", .{dir}) catch return;
+    defer allocator.free(socket_path);
+
+    // One line per session: "<attached> <name>". No server yet => non-zero exit.
+    const list = std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = &[_][]const u8{
+            tmux_path, "-S", socket_path, "list-sessions", "-F", "#{session_attached} #{session_name}",
+        },
+    }) catch return;
+    defer allocator.free(list.stdout);
+    defer allocator.free(list.stderr);
+    switch (list.term) {
+        .Exited => |code| if (code != 0) return,
+        else => return,
+    }
+
+    var reaped: usize = 0;
+    var it = std.mem.splitScalar(u8, list.stdout, '\n');
+    while (it.next()) |raw| {
+        const line = std.mem.trimRight(u8, raw, " \t\r");
+        if (line.len < 3) continue;
+        if (!std.mem.startsWith(u8, line, "0 ")) continue; // attached (or malformed) — spare it
+        const name = line[2..];
+        if (name.len == 0) continue;
+        var child = std.process.Child.init(&[_][]const u8{
+            tmux_path, "-S", socket_path, "kill-session", "-t", name,
+        }, allocator);
+        child.stdin_behavior = .Ignore;
+        child.stdout_behavior = .Ignore;
+        child.stderr_behavior = .Ignore;
+        _ = child.spawnAndWait() catch |err| {
+            log.debug("reap: kill-session {s} failed: {}", .{ name, err });
+            continue;
+        };
+        reaped += 1;
+    }
+    if (reaped > 0) log.info("reaped {d} detached tmux session(s)", .{reaped});
 }
 
 /// tmux's `pane_current_command` for an idle pane is the shell name (e.g. "zsh");

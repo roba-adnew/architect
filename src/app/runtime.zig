@@ -36,6 +36,7 @@ const dpi = @import("../dpi.zig");
 const metrics_mod = @import("../metrics.zig");
 const open_url = @import("../os/open.zig");
 const terminal_history = @import("terminal_history.zig");
+const tmux = @import("../tmux.zig");
 
 const log = std.log.scoped(.runtime);
 extern "c" fn tcgetpgrp(fd: posix.fd_t) posix.pid_t;
@@ -290,7 +291,14 @@ fn seedSessionAgentMetadataFromEntry(
         log.warn("failed to seed agent session id for restored session {d}: {}", .{ session.slot_index, err });
         return;
     };
-    session.agent_metadata_captured = false;
+    // Treat a seeded id as captured so it keeps being persisted forward. It is a
+    // real resume target (it came from a prior live capture or quit scrape), so
+    // re-writing it every save is strictly better than dropping it. The live
+    // SessionStart hook (or the quit scrape) overwrites it with the fresher id
+    // once the agent restarts. Marking it false here meant a mid-run agent that
+    // never re-fired SessionStart lost its id on the first periodic save, so the
+    // next reload could no longer auto-resume it.
+    session.agent_metadata_captured = true;
 }
 
 fn terminalEntriesMatchSessions(
@@ -1575,6 +1583,20 @@ pub fn run() !void {
     errdefer persistence.deinit(allocator);
     persistence.font_size = std.math.clamp(persistence.font_size, min_font_size, max_font_size);
 
+    // Mint the per-install tmux-name epoch (first launch after upgrade) and hand
+    // it to the tmux layer BEFORE any session spawns, so `architect-<epoch>-<n>`
+    // names are used from the very first buildPersist. Save immediately so the
+    // epoch is stable across relaunch (reattach depends on the name being equal).
+    if (persistence.ensurePersistEpoch(allocator) catch |err| blk: {
+        log.warn("failed to generate persist epoch: {}", .{err});
+        break :blk false;
+    }) {
+        persistence.save(allocator) catch |err| {
+            log.warn("failed to save freshly generated persist epoch: {}", .{err});
+        };
+    }
+    tmux.setEpoch(persistence.persist_epoch);
+
     // Seed the live grid font scale: a persisted value (from a previous
     // Cmd+Opt +/- adjustment) wins over the static [font]/[grid] config; then
     // mirror it back so future persistence saves keep it in sync.
@@ -1839,6 +1861,11 @@ pub fn run() !void {
     try sessions[0].ensureSpawnedWithLoop(&loop);
 
     init_count = sessions.len;
+
+    // Now that every restored/first session has reattached and holds a client,
+    // drain the socket's detached-session graveyard (crashed instances, closed
+    // terminals, pre-epoch fossils). Ours read as attached, so they're spared.
+    if (sessions[0].tmux_backed) tmux.reapDetachedSessions(allocator);
 
     const session_ui_info = try allocator.alloc(ui_mod.SessionUiInfo, grid_layout.max_terminals);
     defer allocator.free(session_ui_info);
@@ -3127,8 +3154,14 @@ pub fn run() !void {
                 if (idx >= sessions.len) continue;
                 if (idx == anim_state.focused_session) continue;
 
+                // Clear the pane we're leaving, but NOT the one we're moving to:
+                // the same mouse-down that queued this action already ran
+                // `beginSelection` on `idx`, which cleared that pane's screen
+                // selection and armed a drag (selection_pending/anchor). Clearing
+                // `idx` here would reset those flags before the following motion
+                // events could build the selection, so a drag-select on a
+                // non-focused grid pane produced nothing to copy.
                 session_interaction_component.clearSelection(anim_state.focused_session);
-                session_interaction_component.clearSelection(idx);
                 anim_state.focused_session = idx;
             },
             .RevealHiddenTerminal => |idx| {
@@ -4216,18 +4249,19 @@ test "seedSessionAgentMetadataFromEntry seeds known restored metadata" {
     try std.testing.expect(session.agent_session_id != null);
     try std.testing.expectEqualStrings("abc-123", session.agent_session_id.?);
     try std.testing.expect(session.agent_session_id.?.ptr != entry.agent_session_id.?.ptr);
-    try std.testing.expect(!session.agent_metadata_captured);
+    // A seeded id is marked captured so it survives periodic saves (Bug 2 fix).
+    try std.testing.expect(session.agent_metadata_captured);
 
     if (session.agent_session_id) |sid| allocator.free(sid);
 }
 
-test "syncPersistenceTerminalEntriesFromSessions ignores restored agent metadata until quit capture" {
+test "syncPersistenceTerminalEntriesFromSessions keeps restored agent metadata (Bug 2)" {
     const allocator = std.testing.allocator;
 
     var persistence = config_mod.Persistence.init(allocator);
     defer persistence.deinit(allocator);
 
-    try persistence.appendTerminalEntry(allocator, "/one", "codex", "stale-seed", false);
+    try persistence.appendTerminalEntry(allocator, "/one", "codex", "seed-id", false);
 
     var session: SessionState = undefined;
     session.slot_index = 0;
@@ -4243,10 +4277,12 @@ test "syncPersistenceTerminalEntriesFromSessions ignores restored agent metadata
 
     var sessions = [_]*SessionState{&session};
 
-    try std.testing.expect(try syncPersistenceTerminalEntriesFromSessions(&persistence, &sessions, allocator));
+    // A seeded id must keep being persisted, even without a fresh live/quit
+    // capture — otherwise a mid-run agent's resume id is wiped on the first save.
+    _ = try syncPersistenceTerminalEntriesFromSessions(&persistence, &sessions, allocator);
     try std.testing.expectEqual(@as(usize, 1), persistence.terminal_entries.items.len);
-    try std.testing.expect(persistence.terminal_entries.items[0].agent_type == null);
-    try std.testing.expect(persistence.terminal_entries.items[0].agent_session_id == null);
+    try std.testing.expectEqualStrings("codex", persistence.terminal_entries.items[0].agent_type.?);
+    try std.testing.expectEqualStrings("seed-id", persistence.terminal_entries.items[0].agent_session_id.?);
 }
 
 test "syncPersistenceTerminalEntriesFromSessions reacts to cd, spawn, and despawn" {

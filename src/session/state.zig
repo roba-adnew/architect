@@ -82,8 +82,9 @@ pub const SessionState = struct {
     /// Stable per-object identity for the tmux persistence layer. Assigned once at
     /// creation (= the physical array position) and NEVER reassigned — unlike
     /// slot_index, which compactSessions rewrites to the current grid position as
-    /// terminals are hidden/closed/reordered. tmux session names (`architect-<n>`)
-    /// key off this so a live pane's name never drifts out from under it. Keying
+    /// terminals are hidden/closed/reordered. tmux session names
+    /// (`architect-<epoch>-<n>`) key off this so a live pane's name never drifts
+    /// out from under it. Keying
     /// them off the mutable slot_index instead let a new terminal reuse a name a
     /// live session still held, and `tmux new-session -A` would ATTACH to (clone)
     /// that live session. Must be stable for the object's lifetime.

@@ -404,6 +404,14 @@ pub const Persistence = struct {
     /// Live grid-pane font-scale multiplier (Cmd+Opt +/-), persisted so it
     /// survives relaunch. 0 = unset -> fall back to [font]/[grid] config.
     grid_font_scale: f32 = 0,
+    /// Random per-install token mixed into tmux session names
+    /// (`architect-<epoch>-<index>`). tmux sessions live on one shared socket
+    /// across every launch and are never auto-cleared, so a bare
+    /// `architect-<index>` from THIS launch collided with a fossil of the same
+    /// name from a previous launch and `new-session -A` reattached to the wrong
+    /// (old) session. The epoch makes each install's names disjoint. Owned when
+    /// non-empty; generated on first load via ensurePersistEpoch. "" = unset.
+    persist_epoch: []const u8 = "",
     /// Per-grid-shape font-scale presets, keyed by "<cols>x<rows>", so each grid
     /// shape remembers its own zoom level across relaunches.
     grid_font_presets: std.ArrayListUnmanaged(GridFontPreset) = .{},
@@ -424,6 +432,7 @@ pub const Persistence = struct {
         focused_session: usize = 0,
         zoomed: bool = false,
         grid_font_scale: f32 = 0,
+        persist_epoch: ?[]const u8 = null,
         grid_font_presets: ?toml.HashMap(f32) = null,
     };
 
@@ -446,12 +455,34 @@ pub const Persistence = struct {
     }
 
     pub fn deinit(self: *Persistence, allocator: std.mem.Allocator) void {
+        if (self.persist_epoch.len > 0) {
+            allocator.free(self.persist_epoch);
+            self.persist_epoch = "";
+        }
         self.clearTerminalEntries(allocator);
         self.terminal_entries.deinit(allocator);
         self.clearRecentFolders(allocator);
         self.recent_folders.deinit(allocator);
         self.clearGridFontPresets(allocator);
         self.grid_font_presets.deinit(allocator);
+    }
+
+    /// Generate the per-install tmux-name epoch if it isn't set yet. Returns true
+    /// when a new one was minted (caller should save so it survives relaunch).
+    /// 8 random bytes -> 16 lowercase-hex chars, keeping tmux session names short
+    /// and collision-free across installs. See the persist_epoch field comment.
+    pub fn ensurePersistEpoch(self: *Persistence, allocator: std.mem.Allocator) !bool {
+        if (self.persist_epoch.len > 0) return false;
+        var raw: [8]u8 = undefined;
+        std.crypto.random.bytes(&raw);
+        const hex = "0123456789abcdef";
+        var buf: [16]u8 = undefined;
+        for (raw, 0..) |b, i| {
+            buf[i * 2] = hex[b >> 4];
+            buf[i * 2 + 1] = hex[b & 0x0f];
+        }
+        self.persist_epoch = try allocator.dupe(u8, &buf);
+        return true;
     }
 
     pub fn load(allocator: std.mem.Allocator) !Persistence {
@@ -482,6 +513,10 @@ pub const Persistence = struct {
             persistence.focused_session = result.value.focused_session;
             persistence.zoomed = result.value.zoomed;
             persistence.grid_font_scale = result.value.grid_font_scale;
+            // Dupe into our own memory before the parser arena is freed (result.deinit).
+            if (result.value.persist_epoch) |epoch| {
+                if (epoch.len > 0) persistence.persist_epoch = try allocator.dupe(u8, epoch);
+            }
 
             if (result.value.terminals) |paths| {
                 for (paths, 0..) |path, idx| {
@@ -586,6 +621,11 @@ pub const Persistence = struct {
         try writer.print("focused_session = {d}\n", .{self.focused_session});
         try writer.print("zoomed = {}\n", .{self.zoomed});
         try writer.print("grid_font_scale = {d:.3}\n", .{self.grid_font_scale});
+        if (self.persist_epoch.len > 0) {
+            try writer.writeAll("persist_epoch = ");
+            try writeTomlStringToWriter(writer, self.persist_epoch);
+            try writer.writeAll("\n");
+        }
 
         // Write terminal path and agent arrays before any sections
         if (self.terminal_entries.items.len > 0) {
@@ -1450,6 +1490,32 @@ test "Persistence.appendTerminalEntry preserves order and fields" {
     try std.testing.expectEqualStrings("/two", persistence.terminal_entries.items[1].path);
     try std.testing.expectEqualStrings("claude", persistence.terminal_entries.items[1].agent_type.?);
     try std.testing.expectEqualStrings("abc-123", persistence.terminal_entries.items[1].agent_session_id.?);
+}
+
+test "Persistence.ensurePersistEpoch mints once and serializes round-trip" {
+    const allocator = std.testing.allocator;
+    var persistence = Persistence.init(allocator);
+    defer persistence.deinit(allocator);
+
+    // First call mints a 16-hex-char epoch; a second call is a no-op.
+    try std.testing.expect(try persistence.ensurePersistEpoch(allocator));
+    const minted = try allocator.dupe(u8, persistence.persist_epoch);
+    defer allocator.free(minted);
+    try std.testing.expectEqual(@as(usize, 16), minted.len);
+    try std.testing.expect(!(try persistence.ensurePersistEpoch(allocator)));
+    try std.testing.expectEqualStrings(minted, persistence.persist_epoch);
+
+    // The epoch survives a serialize -> parse round-trip.
+    var writer = std.Io.Writer.Allocating.init(allocator);
+    defer writer.deinit();
+    try persistence.serializeToWriter(&writer.writer);
+
+    var parser = toml.Parser(Persistence.TomlPersistenceV3).init(allocator);
+    defer parser.deinit();
+    const result = try parser.parseString(writer.written());
+    defer result.deinit();
+    try std.testing.expect(result.value.persist_epoch != null);
+    try std.testing.expectEqualStrings(minted, result.value.persist_epoch.?);
 }
 
 test "Persistence.appendLegacyTerminalEntries migrates row-major order" {
