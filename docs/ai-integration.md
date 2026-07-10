@@ -6,8 +6,8 @@ Architect also ships `architect-mcp`, a separate stdio MCP helper that lets loca
 
 ## Socket Protocol
 
-- Socket: `${XDG_RUNTIME_DIR:-/tmp}/architect_notify_<pid>.sock`
-- Per-shell env vars: `ARCHITECT_SESSION_ID` (0-based) and `ARCHITECT_NOTIFY_SOCK` (socket path)
+- Socket: `${XDG_RUNTIME_DIR:-/tmp}/architect_notify_<configkey>.sock` — `<configkey>` is a hash of the config dir, so the path is stable across app restarts (tmux-reattached shells keep a valid `ARCHITECT_NOTIFY_SOCK`) and disjoint per `ARCHITECT_CONFIG_DIR` instance
+- Per-shell env vars: `ARCHITECT_SESSION_ID` (the terminal's stable persist index — unchanged across app restarts) and `ARCHITECT_NOTIFY_SOCK` (socket path)
 - Payload: send a single-line JSON object
 
 Examples:

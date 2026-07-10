@@ -75,7 +75,6 @@ const session_id_buf_len: usize = 32;
 const synchronized_output_timeout_ms: i64 = 1000;
 const synchronized_output_quiet_ms: i64 = 100;
 const synchronized_output_max_timeout_ms: i64 = 5000;
-var next_session_id = std.atomic.Value(usize).init(0);
 
 pub const SessionState = struct {
     slot_index: usize,
@@ -239,7 +238,7 @@ pub const SessionState = struct {
 
         // Bump generation to invalidate any stale callbacks from a previous shell; wrapping is intentional.
         self.process_generation +%= 1;
-        self.assignNewSessionId();
+        self.assignSessionId();
 
         // tmux-backed persistence (on by default): when tmux is available the
         // shell is wrapped in a detached tmux session so it survives an Architect
@@ -321,11 +320,18 @@ pub const SessionState = struct {
         };
     }
 
-    fn assignNewSessionId(self: *SessionState) void {
-        const new_id = next_session_id.fetchAdd(1, .seq_cst);
-        self.id = new_id;
-        const written = std.fmt.bufPrint(&self.session_id_z, "{d}", .{new_id}) catch |err| {
-            log.warn("failed to format session id {d}: {}", .{ new_id, err });
+    /// The session's wire identity: exported as ARCHITECT_SESSION_ID and
+    /// echoed back in every notify-socket message. It equals persist_index —
+    /// unique within a run and STABLE ACROSS RESTARTS — so hooks from a
+    /// tmux-reattached agent, whose environment was baked by a previous app
+    /// process, still resolve to the right terminal. The old per-run counter
+    /// (0,1,2... in spawn order) collided across runs with different layouts,
+    /// attributing a reattached agent's status and captured resume id to
+    /// whatever terminal happened to hold that number now.
+    fn assignSessionId(self: *SessionState) void {
+        self.id = self.persist_index;
+        const written = std.fmt.bufPrint(&self.session_id_z, "{d}", .{self.id}) catch |err| {
+            log.warn("failed to format session id {d}: {}", .{ self.id, err });
             self.session_id_z[0] = 0;
             return;
         };
@@ -1181,9 +1187,8 @@ test "synchronized output hard timeout clears chatty sessions" {
     try std.testing.expect(!session.synchronizedOutputActive());
 }
 
-test "SessionState assigns incrementing ids" {
+test "session id mirrors persist_index and is stable across respawns" {
     const allocator = std.testing.allocator;
-    next_session_id.store(0, .seq_cst);
     const theme = colors_mod.Theme.default();
 
     const size = pty_mod.winsize{
@@ -1194,17 +1199,19 @@ test "SessionState assigns incrementing ids" {
     };
     const notify_sock: [:0]const u8 = "sock";
 
-    var first = try SessionState.init(allocator, 0, "/bin/zsh", size, notify_sock, theme);
-    defer first.deinit(allocator);
-    first.assignNewSessionId();
-    try std.testing.expectEqual(@as(usize, 0), first.id);
-    try std.testing.expectEqualStrings("0", std.mem.sliceTo(first.session_id_z[0..], 0));
+    var session = try SessionState.init(allocator, 0, "/bin/zsh", size, notify_sock, theme);
+    defer session.deinit(allocator);
 
-    var second = try SessionState.init(allocator, 1, "/bin/zsh", size, notify_sock, theme);
-    defer second.deinit(allocator);
-    second.assignNewSessionId();
-    try std.testing.expectEqual(@as(usize, 1), second.id);
-    try std.testing.expectEqualStrings("1", std.mem.sliceTo(second.session_id_z[0..], 0));
+    // A restored terminal reclaims a drifted identity before spawning; the
+    // wire id must follow it, not the slot position or a spawn counter.
+    session.persist_index = 141;
+    session.assignSessionId();
+    try std.testing.expectEqual(@as(usize, 141), session.id);
+    try std.testing.expectEqualStrings("141", std.mem.sliceTo(session.session_id_z[0..], 0));
+
+    // Re-assigning (a respawn in the same slot) keeps the same identity.
+    session.assignSessionId();
+    try std.testing.expectEqual(@as(usize, 141), session.id);
 }
 
 test "despawn keeps active wait context alive until callback reclaims it" {

@@ -58,12 +58,41 @@ pub const NotificationQueue = struct {
 
 pub const GetNotifySocketPathError = std.mem.Allocator.Error;
 
+/// The socket name must be STABLE across app restarts: shells bake
+/// ARCHITECT_NOTIFY_SOCK into their environment at spawn, and tmux-reattached
+/// panes keep that environment across an Architect reload. The old pid-based
+/// name pointed every reattached agent's hooks at a dead socket, so their
+/// statuses (and captured session ids) were lost until the agent restarted.
+/// Keyed by the config dir so an isolated dev instance (ARCHITECT_CONFIG_DIR)
+/// keeps its own socket; two instances sharing one config dir already share
+/// persistence and are unsupported.
+fn notifySocketName(buf: []u8) []const u8 {
+    const config_dir = std.posix.getenv("ARCHITECT_CONFIG_DIR") orelse
+        (std.posix.getenv("HOME") orelse "/");
+    const key = std.hash.Wyhash.hash(0, config_dir);
+    return std.fmt.bufPrint(buf, "architect_notify_{x}.sock", .{key}) catch |err| blk: {
+        log.warn("notify socket name format failed: {}", .{err});
+        break :blk "architect_notify.sock";
+    };
+}
+
 pub fn getNotifySocketPath(allocator: std.mem.Allocator) GetNotifySocketPathError![:0]u8 {
     const base = std.posix.getenv("XDG_RUNTIME_DIR") orelse "/tmp";
-    const pid = std.c.getpid();
-    const socket_name = try std.fmt.allocPrint(allocator, "architect_notify_{d}.sock", .{pid});
-    defer allocator.free(socket_name);
+    var name_buf: [64]u8 = undefined;
+    const socket_name = notifySocketName(&name_buf);
     return try std.fs.path.joinZ(allocator, &[_][]const u8{ base, socket_name });
+}
+
+test "notifySocketName is stable and pid-free" {
+    var buf_a: [64]u8 = undefined;
+    var buf_b: [64]u8 = undefined;
+    const a = notifySocketName(&buf_a);
+    const b = notifySocketName(&buf_b);
+    // Deterministic for a fixed environment: two calls (and thus two app
+    // runs) produce the same name — this is what keeps reattached panes' env valid.
+    try std.testing.expectEqualStrings(a, b);
+    try std.testing.expect(std.mem.startsWith(u8, a, "architect_notify_"));
+    try std.testing.expect(std.mem.endsWith(u8, a, ".sock"));
 }
 
 const NotifyContext = struct {
@@ -214,9 +243,21 @@ pub fn startNotifyThread(
             const fd = try posix.socket(posix.AF.UNIX, posix.SOCK.STREAM, 0);
             defer posix.close(fd);
 
-            try posix.bind(fd, &addr.any, addr.getOsSockLen());
-            try posix.listen(fd, 16);
             const sock_path = std.mem.sliceTo(ctx.socket_path, 0);
+            // The path is stable across runs, so a crashed/unclean exit leaves
+            // the previous socket file behind and bind would fail AddressInUse.
+            // Removing it is safe: one instance per config dir owns this name
+            // (see notifySocketName).
+            posix.unlink(sock_path) catch |err| switch (err) {
+                error.FileNotFound => {},
+                else => log.warn("failed to remove stale notify socket: {}", .{err}),
+            };
+
+            try posix.bind(fd, &addr.any, addr.getOsSockLen());
+            defer posix.unlink(sock_path) catch |err| {
+                log.debug("failed to unlink notify socket at shutdown: {}", .{err});
+            };
+            try posix.listen(fd, 16);
             std.posix.fchmodat(posix.AT.FDCWD, sock_path, 0o600, 0) catch |err| {
                 log.warn("failed to chmod notify socket: {}", .{err});
             };

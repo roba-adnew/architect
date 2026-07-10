@@ -237,8 +237,8 @@ The `<= len` pattern is only correct when `pos` represents a position *after* pr
 - Grid PTY sizing and grid rendering must use the SAME cell. `layout.calculateTerminalSizes` takes `grid_cell_w`/`grid_cell_h` (the grid font's native cell, the same one the renderer draws at `grid_render_scale = 1.0`) — do not size the grid PTY from `base_font.cell × scale_factor`, or the PTY gets more rows/cols than the renderer fits and grid tiles clip the status line / right edge. Pass `grid_font.cell_width`/`grid_font.cell_height` through `applyTerminalLayout*`/`computeTerminalSizes`.
 
 ## Claude Socket Hook
-- The app creates `${XDG_RUNTIME_DIR:-/tmp}/architect_notify_<pid>.sock` and sets `ARCHITECT_SESSION_ID`/`ARCHITECT_NOTIFY_SOCK` for each shell.
-- Send a single JSON line to signal UI states: `{"session":N,"state":"start"|"awaiting_approval"|"done"}`. The helper `scripts/architect_notify.py` is available if needed.
+- The app creates `${XDG_RUNTIME_DIR:-/tmp}/architect_notify_<configkey>.sock` (`<configkey>` = hash of the config dir — STABLE across restarts so tmux-reattached panes' baked-in `ARCHITECT_NOTIFY_SOCK` stays valid; per-`ARCHITECT_CONFIG_DIR` instances get disjoint sockets) and sets `ARCHITECT_SESSION_ID`/`ARCHITECT_NOTIFY_SOCK` for each shell. `ARCHITECT_SESSION_ID` equals the terminal's `persist_index` — stable across restarts — so hooks from reattached agents attribute to the right terminal.
+- Send a single JSON line to signal UI states: `{"session":N,"state":"start"|"awaiting_approval"|"done"}` (N = the `ARCHITECT_SESSION_ID` value). The helper `scripts/architect_notify.py` is available if needed.
 - Story notifications use the same socket: `{"session":N,"type":"story","path":"/absolute/path/to/story.md"}`. The `architect story <file>` subcommand sends this automatically.
 
 ## Done? Share
