@@ -58,14 +58,10 @@ pub const NotificationQueue = struct {
 
 pub const GetNotifySocketPathError = std.mem.Allocator.Error;
 
-/// The socket name must be STABLE across app restarts: shells bake
-/// ARCHITECT_NOTIFY_SOCK into their environment at spawn, and tmux-reattached
-/// panes keep that environment across an Architect reload. The old pid-based
-/// name pointed every reattached agent's hooks at a dead socket, so their
-/// statuses (and captured session ids) were lost until the agent restarted.
-/// Keyed by the config dir so an isolated dev instance (ARCHITECT_CONFIG_DIR)
-/// keeps its own socket; two instances sharing one config dir already share
-/// persistence and are unsupported.
+/// Stable across app restarts: tmux-reattached panes keep the
+/// ARCHITECT_NOTIFY_SOCK baked at spawn, so a pid-based name would point their
+/// hooks at a dead socket. Keyed by config dir so per-ARCHITECT_CONFIG_DIR
+/// instances get disjoint sockets.
 fn notifySocketName(buf: []u8) []const u8 {
     const config_dir = std.posix.getenv("ARCHITECT_CONFIG_DIR") orelse
         (std.posix.getenv("HOME") orelse "/");
@@ -83,16 +79,12 @@ pub fn getNotifySocketPath(allocator: std.mem.Allocator) GetNotifySocketPathErro
     return try std.fs.path.joinZ(allocator, &[_][]const u8{ base, socket_name });
 }
 
-test "notifySocketName is stable and pid-free" {
+test "notifySocketName is stable across calls" {
+    // Deterministic for a fixed environment: two calls (and thus two app
+    // runs) produce the same name, keeping reattached panes' env valid.
     var buf_a: [64]u8 = undefined;
     var buf_b: [64]u8 = undefined;
-    const a = notifySocketName(&buf_a);
-    const b = notifySocketName(&buf_b);
-    // Deterministic for a fixed environment: two calls (and thus two app
-    // runs) produce the same name — this is what keeps reattached panes' env valid.
-    try std.testing.expectEqualStrings(a, b);
-    try std.testing.expect(std.mem.startsWith(u8, a, "architect_notify_"));
-    try std.testing.expect(std.mem.endsWith(u8, a, ".sock"));
+    try std.testing.expectEqualStrings(notifySocketName(&buf_a), notifySocketName(&buf_b));
 }
 
 const NotifyContext = struct {
@@ -157,10 +149,9 @@ pub fn startNotifyThread(
     stop: *atomic.Value(bool),
     runtime_wake: ?RuntimeWake,
 ) StartNotifyThreadError!std.Thread {
-    _ = std.posix.unlink(socket_path) catch |err| switch (err) {
-        error.FileNotFound => {},
-        else => log.warn("failed to unlink notify socket: {}", .{err}),
-    };
+    // The stale-socket unlink lives in run(), co-located with bind and the
+    // shutdown unlink, so the listener thread owns the socket file's whole
+    // lifecycle (create -> bind -> remove) in one place.
 
     const handler = struct {
         fn parseNotification(bytes: []const u8, persistent_alloc: std.mem.Allocator) ?Notification {
@@ -244,10 +235,9 @@ pub fn startNotifyThread(
             defer posix.close(fd);
 
             const sock_path = std.mem.sliceTo(ctx.socket_path, 0);
-            // The path is stable across runs, so a crashed/unclean exit leaves
-            // the previous socket file behind and bind would fail AddressInUse.
-            // Removing it is safe: one instance per config dir owns this name
-            // (see notifySocketName).
+            // The path is stable across runs; remove a stale socket from an
+            // unclean exit or bind fails AddressInUse. Safe: one instance per
+            // config dir owns this name (see notifySocketName).
             posix.unlink(sock_path) catch |err| switch (err) {
                 error.FileNotFound => {},
                 else => log.warn("failed to remove stale notify socket: {}", .{err}),

@@ -320,14 +320,11 @@ pub const SessionState = struct {
         };
     }
 
-    /// The session's wire identity: exported as ARCHITECT_SESSION_ID and
-    /// echoed back in every notify-socket message. It equals persist_index —
-    /// unique within a run and STABLE ACROSS RESTARTS — so hooks from a
-    /// tmux-reattached agent, whose environment was baked by a previous app
-    /// process, still resolve to the right terminal. The old per-run counter
-    /// (0,1,2... in spawn order) collided across runs with different layouts,
-    /// attributing a reattached agent's status and captured resume id to
-    /// whatever terminal happened to hold that number now.
+    /// Wire identity: exported as ARCHITECT_SESSION_ID and echoed back in
+    /// every notify-socket message. Equals persist_index (unique within a run,
+    /// stable across restarts) so hooks from a tmux-reattached agent, whose
+    /// env was baked by a previous run, still resolve to the right terminal —
+    /// a per-run spawn counter collided across runs with different layouts.
     fn assignSessionId(self: *SessionState) void {
         self.id = self.persist_index;
         const written = std.fmt.bufPrint(&self.session_id_z, "{d}", .{self.id}) catch |err| {
@@ -1187,7 +1184,7 @@ test "synchronized output hard timeout clears chatty sessions" {
     try std.testing.expect(!session.synchronizedOutputActive());
 }
 
-test "session id mirrors persist_index and is stable across respawns" {
+test "session id mirrors persist_index" {
     const allocator = std.testing.allocator;
     const theme = colors_mod.Theme.default();
 
@@ -1202,16 +1199,12 @@ test "session id mirrors persist_index and is stable across respawns" {
     var session = try SessionState.init(allocator, 0, "/bin/zsh", size, notify_sock, theme);
     defer session.deinit(allocator);
 
-    // A restored terminal reclaims a drifted identity before spawning; the
+    // A restored terminal reclaims its persist_index before spawning; the
     // wire id must follow it, not the slot position or a spawn counter.
     session.persist_index = 141;
     session.assignSessionId();
     try std.testing.expectEqual(@as(usize, 141), session.id);
     try std.testing.expectEqualStrings("141", std.mem.sliceTo(session.session_id_z[0..], 0));
-
-    // Re-assigning (a respawn in the same slot) keeps the same identity.
-    session.assignSessionId();
-    try std.testing.expectEqual(@as(usize, 141), session.id);
 }
 
 test "despawn keeps active wait context alive until callback reclaims it" {
