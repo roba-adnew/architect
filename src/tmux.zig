@@ -463,28 +463,12 @@ pub fn discardOrphanSession(allocator: std.mem.Allocator, persist_index: usize) 
 /// Whether a persistent session for this index exists on the socket right now.
 /// Lets the restore path tell "reattached" apart from "started fresh".
 pub fn hasSession(allocator: std.mem.Allocator, persist_index: usize) bool {
-    const tmux_path = findOnPath(allocator, "tmux") orelse return false;
-    defer allocator.free(tmux_path);
-
-    const dir = runtimeDir();
-    const socket_path = allocZ(allocator, "{s}/architect-tmux.sock", .{dir}) catch return false;
-    defer allocator.free(socket_path);
+    const name = paneDisplay(allocator, persist_index, "#{session_name}") orelse return false;
+    defer allocator.free(name);
     const target = sessionName(allocator, persist_index) orelse return false;
     defer allocator.free(target);
-    // '=' prefix: exact-name match, not tmux's default prefix matching.
-    const exact = allocZ(allocator, "={s}", .{target}) catch return false;
-    defer allocator.free(exact);
-
-    const result = std.process.Child.run(.{
-        .allocator = allocator,
-        .argv = &[_][]const u8{ tmux_path, "-S", socket_path, "has-session", "-t", exact },
-    }) catch return false;
-    defer allocator.free(result.stdout);
-    defer allocator.free(result.stderr);
-    return switch (result.term) {
-        .Exited => |code| code == 0,
-        else => false,
-    };
+    // Equality check defeats tmux's prefix matching (-t foo-1 can hit foo-14).
+    return std.mem.eql(u8, name, target);
 }
 
 const ReapVerdict = enum {

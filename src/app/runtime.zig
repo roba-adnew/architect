@@ -341,7 +341,7 @@ fn terminalEntriesMatchSessions(
 
         if (!std.mem.eql(u8, entry.path, path)) return false;
         if (entry.hidden != session.hidden) return false;
-        if (entry.persist_index == null or entry.persist_index.? != session.persist_index) return false;
+        if (entry.persist_index != session.persist_index) return false;
         if (!optionalStringEql(entry.agent_type, agent_type)) return false;
         if (!optionalStringEql(entry.agent_session_id, agent_session_id)) return false;
 
