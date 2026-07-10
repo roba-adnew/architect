@@ -188,7 +188,7 @@ The installer writes timestamped backups before updating configs (for example:
            "hooks": [
              {
                "type": "command",
-               "command": "architect notify awaiting_approval || true"
+               "command": "architect notify || true"
              }
            ]
          }
@@ -196,6 +196,14 @@ The installer writes timestamped backups before updating configs (for example:
      }
    }
    ```
+
+   The Notification hook deliberately has no state argument: Claude Code pipes the
+   hook JSON to stdin, and `architect notify` maps `notification_type` itself —
+   only `permission_prompt`, `agent_needs_input`, and `elicitation_dialog` become
+   "needs you"; `idle_prompt`, `auth_success`, and the rest are ignored. (The old
+   hardcoded `architect notify awaiting_approval` flagged every notification —
+   including a session merely idling at the prompt — as "needs you";
+   `architect hook claude` migrates that form automatically.)
 
 ## Codex Hooks
 

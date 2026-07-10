@@ -2809,7 +2809,7 @@ pub fn run() !void {
 
                         if (anim_state.mode == .Grid) {
                             try sessions[idx].ensureSpawnedWithLoop(&loop);
-                            session_interaction_component.acknowledgeDone(idx);
+                            session_interaction_component.acknowledgeAttention(idx);
                             session_interaction_component.setAttention(idx, false, now);
 
                             const grid_row: c_int = @intCast(idx / grid.cols);
@@ -2840,7 +2840,7 @@ pub fn run() !void {
                             try sessions[idx].ensureSpawnedWithLoop(&loop);
                             session_interaction_component.clearSelection(anim_state.focused_session);
                             session_interaction_component.clearSelection(idx);
-                            session_interaction_component.acknowledgeDone(idx);
+                            session_interaction_component.acknowledgeAttention(idx);
                             session_interaction_component.setAttention(idx, false, now);
                             anim_state.focused_session = idx;
 
@@ -2864,7 +2864,7 @@ pub fn run() !void {
                             }
                             try grid_nav.navigateGrid(&anim_state, sessions, session_interaction_component, direction, now, true, false, grid.cols, grid.rows, &loop);
                             const new_session = anim_state.focused_session;
-                            session_interaction_component.acknowledgeDone(new_session);
+                            session_interaction_component.acknowledgeAttention(new_session);
                             session_interaction_component.triggerNavWave(new_session, now);
                             std.debug.print("Grid nav to session {d} (with wrapping)\n", .{new_session});
                         } else if (anim_state.mode == .Full) {
@@ -2878,7 +2878,7 @@ pub fn run() !void {
                                 ui.showHotkey(arrow, now);
                             }
                             try grid_nav.navigateGrid(&anim_state, sessions, session_interaction_component, direction, now, true, animations_enabled, grid.cols, grid.rows, &loop);
-                            session_interaction_component.acknowledgeDone(anim_state.focused_session);
+                            session_interaction_component.acknowledgeAttention(anim_state.focused_session);
 
                             const buf_size = grid_nav.gridNotificationBufferSize(grid.cols, grid.rows);
                             const notification_buf = try allocator.alloc(u8, buf_size);
@@ -2913,7 +2913,7 @@ pub fn run() !void {
                         const clicked_session = anim_state.focused_session;
                         try sessions[clicked_session].ensureSpawnedWithLoop(&loop);
 
-                        session_interaction_component.acknowledgeDone(clicked_session);
+                        session_interaction_component.acknowledgeAttention(clicked_session);
                         session_interaction_component.setAttention(clicked_session, false, now);
 
                         const grid_row: c_int = @intCast(clicked_session / grid.cols);
@@ -3207,7 +3207,7 @@ pub fn run() !void {
 
                 session_interaction_component.clearSelection(anim_state.focused_session);
                 try sessions[idx].ensureSpawnedWithLoop(&loop);
-                session_interaction_component.acknowledgeDone(idx);
+                session_interaction_component.acknowledgeAttention(idx);
                 session_interaction_component.setAttention(idx, false, now);
 
                 const grid_row: c_int = @intCast(idx / grid.cols);
@@ -3271,8 +3271,8 @@ pub fn run() !void {
                 anim_state.mode = .Grid;
                 if (findSessionIndexById(sessions, reveal_id)) |new_idx| {
                     anim_state.focused_session = new_idx;
-                    // Revealing is a focus: acknowledge a sticky "done" back to idle.
-                    session_interaction_component.acknowledgeDone(new_idx);
+                    // Revealing is a focus: acknowledge a sticky "done"/"needs you" back to idle.
+                    session_interaction_component.acknowledgeAttention(new_idx);
                 }
                 applyTerminalLayout(sessions, allocator, &font, render_width, render_height, ui_scale, &anim_state, grid.cols, grid.rows, grid_font.cell_width, grid_font.cell_height, &full_cols, &full_rows);
                 ui.showToast("Revealed terminal", now);

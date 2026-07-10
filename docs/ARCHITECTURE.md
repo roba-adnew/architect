@@ -310,6 +310,15 @@ Story notifications  -> StoryOverlay opens with file content
 Renderer draws attention border / story overlay
 ```
 
+Status semantics: `awaiting_approval` ("needs you") and `done` are sticky
+attention cues — no hook event fires when an agent exits, so they persist until
+either a newer status arrives or the user focuses/reveals the terminal, which
+acknowledges both back to `idle` (`SessionViewState.acknowledgeAttention`).
+The Claude Notification hook is installed in stdin mode (`architect notify`),
+which maps only `permission_prompt` / `agent_needs_input` / `elicitation_dialog`
+payloads to `awaiting_approval` and ignores the rest (`idle_prompt`,
+`auth_success`, ...), so an idle session is never flagged as needing the user.
+
 ### External MCP Spawn / Close Path
 
 ```

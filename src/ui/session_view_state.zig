@@ -40,11 +40,13 @@ pub const SessionViewState = struct {
         return true;
     }
 
-    /// Focusing a "done" session acknowledges it back to "idle" — done is a
-    /// sticky attention cue that clears once the user looks at the terminal.
-    /// Returns true if it demoted a "done" status (else a no-op).
-    pub fn acknowledgeDone(self: *SessionViewState) bool {
-        if (self.status != .done) return false;
+    /// Focusing a session acknowledges its sticky attention status ("done" or
+    /// "needs you") back to "idle" — both are cues that clear once the user
+    /// looks at the terminal. Without this, "needs you" outlived agents that
+    /// exited before sending another state and stuck to idle/empty terminals.
+    /// Returns true if it demoted a status (else a no-op).
+    pub fn acknowledgeAttention(self: *SessionViewState) bool {
+        if (self.status != .done and self.status != .awaiting_approval) return false;
         self.status = .idle;
         return true;
     }

@@ -42,6 +42,15 @@ def notify_architect(state: str) -> None:
 
 VALID_STATES = {"start", "awaiting_approval", "done"}
 
+# Claude Code Notification hook types that actually need the user. Everything
+# else (idle_prompt, auth_success, elicitation_complete, ...) is noise for the
+# "needs you" badge and must be ignored, not mapped by substring heuristics.
+CLAUDE_NEEDS_YOU_TYPES = {
+    "permission_prompt",
+    "agent_needs_input",
+    "elicitation_dialog",
+}
+
 
 def state_from_notification(raw: str) -> str | None:
     raw = raw.strip()
@@ -62,6 +71,19 @@ def state_from_notification(raw: str) -> str | None:
     state_field = payload.get("state")
     if isinstance(state_field, str) and state_field in VALID_STATES:
         return state_field
+
+    # Claude Code Notification payloads carry notification_type; it is
+    # authoritative when present. Older Claude versions only carry message.
+    claude_type = payload.get("notification_type")
+    if isinstance(claude_type, str) and claude_type:
+        if claude_type.lower() in CLAUDE_NEEDS_YOU_TYPES:
+            return "awaiting_approval"
+        return None
+    if str(payload.get("hook_event_name") or "") == "Notification":
+        message = str(payload.get("message") or "").lower()
+        if "permission" in message or "approval" in message:
+            return "awaiting_approval"
+        return None
 
     status = payload.get("status")
     if isinstance(status, str):

@@ -142,11 +142,12 @@ pub const SessionInteractionComponent = struct {
         self.sessions[idx].markDirty();
     }
 
-    /// Focusing a "done" session acknowledges it back to "idle"; done stays
-    /// sticky as an attention cue only until the user looks at the terminal.
-    pub fn acknowledgeDone(self: *SessionInteractionComponent, idx: usize) void {
+    /// Focusing a session acknowledges a sticky "done" or "needs you" status
+    /// back to "idle"; both stay as attention cues only until the user looks
+    /// at the terminal.
+    pub fn acknowledgeAttention(self: *SessionInteractionComponent, idx: usize) void {
         if (idx >= self.views.len or idx >= self.sessions.len) return;
-        if (self.views[idx].acknowledgeDone()) self.sessions[idx].markDirty();
+        if (self.views[idx].acknowledgeAttention()) self.sessions[idx].markDirty();
     }
 
     pub fn setAttention(self: *SessionInteractionComponent, idx: usize, attention: bool, now_ms: i64) void {
@@ -1632,17 +1633,22 @@ test "applyClaudeStatus records claude_seen and reports visible changes" {
     try testing.expect(view.claude_seen);
 }
 
-test "acknowledgeDone demotes only done, leaving other statuses untouched" {
+test "acknowledgeAttention demotes done and needs-you, leaving other statuses untouched" {
     var view = view_state.SessionViewState{};
-    // Non-done statuses are never demoted by an acknowledge.
+    // Running is never demoted by an acknowledge.
     view.status = .running;
-    try testing.expect(!view.acknowledgeDone());
+    try testing.expect(!view.acknowledgeAttention());
     try testing.expectEqual(app_state.SessionStatus.running, view.status);
     // A done status is acknowledged back to idle exactly once.
     view.status = .done;
-    try testing.expect(view.acknowledgeDone());
+    try testing.expect(view.acknowledgeAttention());
     try testing.expectEqual(app_state.SessionStatus.idle, view.status);
-    try testing.expect(!view.acknowledgeDone());
+    try testing.expect(!view.acknowledgeAttention());
+    // "Needs you" is sticky the same way: looking at the terminal clears it,
+    // so it can't outlive an agent that exited without sending another state.
+    view.status = .awaiting_approval;
+    try testing.expect(view.acknowledgeAttention());
+    try testing.expectEqual(app_state.SessionStatus.idle, view.status);
 }
 
 test "setAttention does not affect nav_wave_start_time" {

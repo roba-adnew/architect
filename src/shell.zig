@@ -68,7 +68,11 @@ const architect_command_script =
     \\VALID_STATES = {"start", "awaiting_approval", "done"}
     \\
     \\CLAUDE_DONE = "architect notify done || true"
-    \\CLAUDE_APPROVAL = "architect notify awaiting_approval || true"
+    \\# Stdin mode: Claude pipes the Notification hook JSON and state_from_notification
+    \\# decides whether it means "needs you". The old hardcoded form flagged every
+    \\# notification type (idle_prompt, auth_success, ...) as awaiting_approval.
+    \\CLAUDE_APPROVAL = "architect notify || true"
+    \\CLAUDE_APPROVAL_LEGACY = "architect notify awaiting_approval || true"
     \\CLAUDE_SESSION = "architect agent-session || true"
     \\CLAUDE_NEEDLES = ("architect notify", "architect_notify.py")
     \\CLAUDE_SESSION_NEEDLES = ("architect agent-session",)
@@ -137,6 +141,15 @@ const architect_command_script =
     \\            send_agent_session(session_id)
     \\    return 0
     \\
+    \\# Claude Code Notification hook types that actually need the user. Everything
+    \\# else (idle_prompt, auth_success, elicitation_complete, ...) is noise for the
+    \\# "needs you" badge and must be ignored, not mapped by substring heuristics.
+    \\CLAUDE_NEEDS_YOU_TYPES = {
+    \\    "permission_prompt",
+    \\    "agent_needs_input",
+    \\    "elicitation_dialog",
+    \\}
+    \\
     \\def state_from_notification(raw: str) -> str | None:
     \\    raw = raw.strip()
     \\    if not raw:
@@ -156,6 +169,19 @@ const architect_command_script =
     \\    state_field = payload.get("state")
     \\    if isinstance(state_field, str) and state_field in VALID_STATES:
     \\        return state_field
+    \\
+    \\    # Claude Code Notification payloads carry notification_type; it is
+    \\    # authoritative when present. Older Claude versions only carry message.
+    \\    claude_type = payload.get("notification_type")
+    \\    if isinstance(claude_type, str) and claude_type:
+    \\        if claude_type.lower() in CLAUDE_NEEDS_YOU_TYPES:
+    \\            return "awaiting_approval"
+    \\        return None
+    \\    if str(payload.get("hook_event_name") or "") == "Notification":
+    \\        message = str(payload.get("message") or "").lower()
+    \\        if "permission" in message or "approval" in message:
+    \\            return "awaiting_approval"
+    \\        return None
     \\
     \\    status = payload.get("status")
     \\    if isinstance(status, str):
@@ -332,6 +358,20 @@ const architect_command_script =
     \\    groups.append(group)
     \\    return group
     \\
+    \\def replace_hook_command(groups, legacy: str, new: str) -> bool:
+    \\    if not isinstance(groups, list):
+    \\        return False
+    \\    changed = False
+    \\    for group in groups:
+    \\        hooks = group.get("hooks") if isinstance(group, dict) else None
+    \\        if not isinstance(hooks, list):
+    \\            continue
+    \\        for hook in hooks:
+    \\            if isinstance(hook, dict) and hook.get("command") == legacy:
+    \\                hook["command"] = new
+    \\                changed = True
+    \\    return changed
+    \\
     \\def ensure_claude_hooks(data: dict) -> bool:
     \\    hooks = data.setdefault("hooks", {})
     \\    if not isinstance(hooks, dict):
@@ -344,6 +384,11 @@ const architect_command_script =
     \\    if not hooks_have_needles(stop_groups, CLAUDE_NEEDLES):
     \\        group = ensure_group(stop_groups)
     \\        group["hooks"].append({"type": "command", "command": CLAUDE_DONE})
+    \\        changed = True
+    \\
+    \\    # The needle check treats the legacy hardcoded command as installed, so
+    \\    # migrate it in place before deciding whether to append a fresh hook.
+    \\    if replace_hook_command(notification_groups, CLAUDE_APPROVAL_LEGACY, CLAUDE_APPROVAL):
     \\        changed = True
     \\
     \\    if not hooks_have_needles(notification_groups, CLAUDE_NEEDLES):
