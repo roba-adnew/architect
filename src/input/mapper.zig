@@ -110,10 +110,37 @@ fn computeCsiModifier(mod: c.SDL_Keymod) u8 {
     return result;
 }
 
+/// CSI-u code for the keys the kitty path encodes; null for everything else.
+fn kittySpecialKeycode(key: c.SDL_Keycode) ?u8 {
+    return switch (key) {
+        c.SDLK_TAB => 9,
+        c.SDLK_RETURN => 13,
+        c.SDLK_BACKSPACE => 127,
+        else => null,
+    };
+}
+
 /// Encodes an SDL key with modifiers into a terminal escape sequence.
 /// cursor_keys: when true (DECCKM mode set), arrow keys use SS3 sequences (\x1bO...)
 /// kitty_enabled: when true, use Kitty keyboard protocol for modified special keys
 pub fn encodeKeyWithMod(key: c.SDL_Keycode, mod: c.SDL_Keymod, cursor_keys: bool, kitty_enabled: bool, buf: []u8) usize {
+    // Kitty CSI-u for modified Tab/Enter/Backspace must run BEFORE the legacy
+    // Ctrl/Cmd/Alt shortcut blocks below: a kitty-negotiated program asked for
+    // the real key event (Alt+Enter as 13;3u, Alt+Backspace as 127;4u, ...) and
+    // applies its own newline/word-delete semantics. The legacy bytes below are
+    // for programs that can't. With the old order, Alt+Enter in a kitty-mode
+    // program was silently dropped and Alt+Backspace sent a hardcoded Ctrl+W.
+    if (kitty_enabled) {
+        if (kittySpecialKeycode(key)) |kc| {
+            const has_modifier = (mod & (c.SDL_KMOD_SHIFT | c.SDL_KMOD_CTRL | c.SDL_KMOD_ALT | c.SDL_KMOD_GUI)) != 0;
+            if (has_modifier) {
+                // Full CSI-u encoding with all modifier bits: ESC [ keycode ; modifier+1 u
+                const result = std.fmt.bufPrint(buf, "\x1b[{d};{d}u", .{ kc, computeCsiModifier(mod) }) catch return 0;
+                return result.len;
+            }
+        }
+    }
+
     if (mod & c.SDL_KMOD_CTRL != 0) {
         if (key >= c.SDLK_A and key <= c.SDLK_Z) {
             buf[0] = @as(u8, @intCast(key - c.SDLK_A + 1));
@@ -175,43 +202,30 @@ pub fn encodeKeyWithMod(key: c.SDL_Keycode, mod: c.SDL_Keymod, cursor_keys: bool
 
     // Modified special keys: Tab, Enter, Backspace
     // When kitty enabled: any modifier combo emits CSI-u
-    // When kitty disabled: only Shift+Tab has special encoding, others fall through to legacy
-    const special_keycode: ?u8 = switch (key) {
-        c.SDLK_TAB => 9,
-        c.SDLK_RETURN => 13,
-        c.SDLK_BACKSPACE => 127,
-        else => null,
-    };
-    if (special_keycode) |kc| {
-        const has_modifier = (mod & (c.SDL_KMOD_SHIFT | c.SDL_KMOD_CTRL | c.SDL_KMOD_ALT | c.SDL_KMOD_GUI)) != 0;
-        if (kitty_enabled and has_modifier) {
-            // Full CSI-u encoding with all modifier bits: ESC [ keycode ; modifier+1 u
-            const csi_mod = computeCsiModifier(mod);
-            const result = std.fmt.bufPrint(buf, "\x1b[{d};{d}u", .{ kc, csi_mod }) catch return 0;
-            return result.len;
-        } else if (!kitty_enabled and (mod & c.SDL_KMOD_SHIFT) != 0) {
-            // Legacy encoding for Shift-modified keys
-            return switch (key) {
-                c.SDLK_TAB => blk: {
-                    @memcpy(buf[0..3], "\x1b[Z");
-                    break :blk 3;
-                },
-                c.SDLK_RETURN => blk: {
-                    // Shift+Enter → insert a newline. Without the kitty protocol
-                    // we can't encode a distinct Shift+Enter, so emit LF (0x0a,
-                    // == Ctrl+J) — the universal "insert newline" that Claude Code
-                    // and other line editors accept in any terminal. Plain Enter
-                    // still sends CR (0x0d) and submits.
-                    buf[0] = '\n';
-                    break :blk 1;
-                },
-                c.SDLK_BACKSPACE => blk: {
-                    buf[0] = 127;
-                    break :blk 1;
-                },
-                else => 0,
-            };
-        }
+    // When kitty disabled: only Shift+Tab has special encoding, others fall through
+    // to legacy. (The kitty CSI-u case for these keys already returned at the top.)
+    if (kittySpecialKeycode(key) != null and !kitty_enabled and (mod & c.SDL_KMOD_SHIFT) != 0) {
+        // Legacy encoding for Shift-modified keys
+        return switch (key) {
+            c.SDLK_TAB => blk: {
+                @memcpy(buf[0..3], "\x1b[Z");
+                break :blk 3;
+            },
+            c.SDLK_RETURN => blk: {
+                // Shift+Enter → insert a newline. Without the kitty protocol
+                // we can't encode a distinct Shift+Enter, so emit LF (0x0a,
+                // == Ctrl+J) — the universal "insert newline" that Claude Code
+                // and other line editors accept in any terminal. Plain Enter
+                // still sends CR (0x0d) and submits.
+                buf[0] = '\n';
+                break :blk 1;
+            },
+            c.SDLK_BACKSPACE => blk: {
+                buf[0] = 127;
+                break :blk 1;
+            },
+            else => 0,
+        };
     }
 
     return switch (key) {
