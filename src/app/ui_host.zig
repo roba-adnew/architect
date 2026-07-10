@@ -76,6 +76,8 @@ pub fn makeUiHost(
             .cwd_path = session.cwd_path,
             .cwd_basename = session.cwd_basename,
             .session_status = if (i < views.len) views[i].status else .idle,
+            .claude_seen = if (i < views.len) views[i].claude_seen else false,
+            .hosting = if (i < views.len) views[i].hosting else false,
             // The hidden-terminals switcher shows the terminal title (e.g. the name
             // from Claude Code's /rename); borrows the session-owned string.
             .agent_name = session.title,

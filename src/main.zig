@@ -28,4 +28,5 @@ test {
     _ = @import("ui/components/find_bar.zig");
     _ = @import("tmux.zig");
     _ = @import("ui/components/cwd_bar.zig");
+    _ = @import("session/hosting.zig");
 }

@@ -127,11 +127,32 @@ pub const SessionInteractionComponent = struct {
         self.sessions[idx].markDirty();
     }
 
+    /// Record a Claude notify-hook status. This is the only path that sets
+    /// "working"/"needs you"/"done"; user interaction never fakes a status.
     pub fn setStatus(self: *SessionInteractionComponent, idx: usize, status: app_state.SessionStatus) void {
         if (idx >= self.views.len or idx >= self.sessions.len) return;
         const view = &self.views[idx];
+        view.claude_seen = true;
         if (view.status == status) return;
         view.status = status;
+        self.sessions[idx].markDirty();
+    }
+
+    pub fn setHosting(self: *SessionInteractionComponent, idx: usize, hosting: bool) void {
+        if (idx >= self.views.len or idx >= self.sessions.len) return;
+        const view = &self.views[idx];
+        if (view.hosting == hosting) return;
+        view.hosting = hosting;
+        self.sessions[idx].markDirty();
+    }
+
+    /// Focusing a "done" session acknowledges it back to "idle"; done stays
+    /// sticky as an attention cue only until the user looks at the terminal.
+    pub fn acknowledgeDone(self: *SessionInteractionComponent, idx: usize) void {
+        if (idx >= self.views.len or idx >= self.sessions.len) return;
+        const view = &self.views[idx];
+        if (view.status != .done) return;
+        view.status = .idle;
         self.sessions[idx].markDirty();
     }
 
@@ -1598,6 +1619,13 @@ test "triggerNavWave sets nav_wave_start_time without touching attention or stat
     try testing.expectEqual(@as(i64, 1000), view.nav_wave_start_time);
     try testing.expectEqual(false, view.attention);
     try testing.expectEqual(app_state.SessionStatus.running, view.status);
+}
+
+test "fresh views are idle with no Claude history or hosting flag" {
+    const view = view_state.SessionViewState{};
+    try testing.expectEqual(app_state.SessionStatus.idle, view.status);
+    try testing.expect(!view.claude_seen);
+    try testing.expect(!view.hosting);
 }
 
 test "setAttention does not affect nav_wave_start_time" {

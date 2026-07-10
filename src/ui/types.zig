@@ -14,6 +14,11 @@ pub const SessionUiInfo = struct {
     cwd_path: ?[]const u8 = null,
     cwd_basename: ?[]const u8 = null,
     session_status: app_state.SessionStatus = .idle,
+    /// A Claude notify-hook status has arrived at some point; "idle" means
+    /// "Claude is resting" only when true, else the session never ran Claude.
+    claude_seen: bool = false,
+    /// The session's process tree owns a listening TCP socket (local server).
+    hosting: bool = false,
     /// Terminal title set by the program (OSC 0/2) — e.g. the name from Claude
     /// Code's /rename — or null if unset. Borrows the session-owned string.
     agent_name: ?[]const u8 = null,

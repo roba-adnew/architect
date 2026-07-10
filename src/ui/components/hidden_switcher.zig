@@ -268,31 +268,35 @@ pub const HiddenSwitcherComponent = struct {
     }
 
     /// The word shown for each status (kept marker-free for testability).
-    fn statusLabel(status: app_state.SessionStatus) []const u8 {
-        return switch (status) {
+    /// Claude hook states win; an idle session shows "hosting" when its
+    /// process tree serves a local port, "idle" when Claude ran here before,
+    /// and a plain dash when nothing has ever happened.
+    fn statusLabel(info: types.SessionUiInfo) []const u8 {
+        return switch (info.session_status) {
             .awaiting_approval => "needs you",
             .running => "working",
             .done => "done",
-            .idle => "idle",
+            .idle => if (info.hosting) "hosting" else if (info.claude_seen) "idle" else "\u{2013}", // –
         };
     }
 
-    /// Leading dot: filled = attention/terminal, hollow = in progress, mid-dot = idle.
-    fn statusMarker(status: app_state.SessionStatus) []const u8 {
-        return switch (status) {
+    /// Leading dot: filled = attention/terminal, hollow = in progress/hosting,
+    /// mid-dot = idle, none = never-touched dash rows.
+    fn statusMarker(info: types.SessionUiInfo) []const u8 {
+        return switch (info.session_status) {
             .awaiting_approval => "\u{25CF}", // ●
             .running => "\u{25CB}", // ○
             .done => "\u{25CF}", // ●
-            .idle => "\u{00B7}", // ·
+            .idle => if (info.hosting) "\u{25CB}" else if (info.claude_seen) "\u{00B7}" else "", // ○ / · / none
         };
     }
 
-    fn statusColor(theme: *const colors.Theme, status: app_state.SessionStatus) c.SDL_Color {
-        return switch (status) {
+    fn statusColor(theme: *const colors.Theme, info: types.SessionUiInfo) c.SDL_Color {
+        return switch (info.session_status) {
             .awaiting_approval => theme.palette[3], // yellow
             .running => theme.accent,
             .done => theme.palette[2], // green
-            .idle => theme.foreground,
+            .idle => if (info.hosting) theme.palette[4] else theme.foreground, // blue when hosting
         };
     }
 
@@ -392,11 +396,12 @@ pub const HiddenSwitcherComponent = struct {
             drawText(self.allocator, renderer, row_fonts.regular, rowLabel(info, &label_left_buf), theme.foreground, modal_x + pad + gap, row_center);
 
             var label_buf: [48]u8 = undefined;
-            const label = std.fmt.bufPrint(&label_buf, "{s} {s}", .{ statusMarker(info.session_status), statusLabel(info.session_status) }) catch |err| blk: {
+            const marker = statusMarker(info);
+            const label = if (marker.len == 0) statusLabel(info) else std.fmt.bufPrint(&label_buf, "{s} {s}", .{ marker, statusLabel(info) }) catch |err| blk: {
                 log.warn("label format failed: {}", .{err});
-                break :blk statusLabel(info.session_status);
+                break :blk statusLabel(info);
             };
-            drawTextRight(self.allocator, renderer, row_fonts.regular, label, statusColor(theme, info.session_status), modal_x + modal_w - pad - gap, row_center);
+            drawTextRight(self.allocator, renderer, row_fonts.regular, label, statusColor(theme, info), modal_x + modal_w - pad - gap, row_center);
         }
     }
 
@@ -496,10 +501,41 @@ test "collectHidden returns 0 when nothing is hidden" {
 }
 
 test "statusLabel covers every status" {
-    try std.testing.expectEqualStrings("needs you", HiddenSwitcherComponent.statusLabel(.awaiting_approval));
-    try std.testing.expectEqualStrings("working", HiddenSwitcherComponent.statusLabel(.running));
-    try std.testing.expectEqualStrings("done", HiddenSwitcherComponent.statusLabel(.done));
-    try std.testing.expectEqualStrings("idle", HiddenSwitcherComponent.statusLabel(.idle));
+    const base = types.SessionUiInfo{ .dead = false, .spawned = true, .hidden = true };
+
+    var info = base;
+    info.session_status = .awaiting_approval;
+    try std.testing.expectEqualStrings("needs you", HiddenSwitcherComponent.statusLabel(info));
+    info.session_status = .running;
+    try std.testing.expectEqualStrings("working", HiddenSwitcherComponent.statusLabel(info));
+    info.session_status = .done;
+    try std.testing.expectEqualStrings("done", HiddenSwitcherComponent.statusLabel(info));
+    info.session_status = .idle;
+    try std.testing.expectEqualStrings("\u{2013}", HiddenSwitcherComponent.statusLabel(info));
+    info.claude_seen = true;
+    try std.testing.expectEqualStrings("idle", HiddenSwitcherComponent.statusLabel(info));
+}
+
+test "hosting shows only when no Claude state is active" {
+    var info = types.SessionUiInfo{ .dead = false, .spawned = true, .hidden = true, .hosting = true };
+
+    info.session_status = .idle;
+    try std.testing.expectEqualStrings("hosting", HiddenSwitcherComponent.statusLabel(info));
+    // Claude states take precedence over hosting.
+    info.session_status = .running;
+    try std.testing.expectEqualStrings("working", HiddenSwitcherComponent.statusLabel(info));
+    info.session_status = .done;
+    try std.testing.expectEqualStrings("done", HiddenSwitcherComponent.statusLabel(info));
+    info.session_status = .awaiting_approval;
+    try std.testing.expectEqualStrings("needs you", HiddenSwitcherComponent.statusLabel(info));
+}
+
+test "never-touched idle rows have no marker" {
+    var info = types.SessionUiInfo{ .dead = false, .spawned = true, .hidden = true };
+    info.session_status = .idle;
+    try std.testing.expectEqualStrings("", HiddenSwitcherComponent.statusMarker(info));
+    info.hosting = true;
+    try std.testing.expectEqualStrings("\u{25CB}", HiddenSwitcherComponent.statusMarker(info));
 }
 
 test "backspaceQuery removes a whole UTF-8 codepoint" {

@@ -399,6 +399,38 @@ pub fn panePath(allocator: std.mem.Allocator, persist_index: usize) ?[]u8 {
     };
 }
 
+/// The pid of the persistent session's pane process (the shell running inside
+/// tmux). For a tmux-backed session the PTY child is the tmux client, so
+/// process-tree checks must start from the pane pid — the real tree lives
+/// under the tmux server. Best-effort: null if tmux can't be queried.
+pub fn panePid(allocator: std.mem.Allocator, persist_index: usize) ?std.posix.pid_t {
+    const tmux_path = findOnPath(allocator, "tmux") orelse return null;
+    defer allocator.free(tmux_path);
+
+    const dir = runtimeDir();
+    const socket_path = allocZ(allocator, "{s}/architect-tmux.sock", .{dir}) catch return null;
+    defer allocator.free(socket_path);
+    const target = allocZ(allocator, "architect-{d}", .{persist_index}) catch return null;
+    defer allocator.free(target);
+
+    const result = std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = &[_][]const u8{
+            tmux_path, "-S", socket_path, "display-message", "-p", "-t", target, "#{pane_pid}",
+        },
+    }) catch return null;
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+    switch (result.term) {
+        .Exited => |code| if (code != 0) return null,
+        else => return null,
+    }
+
+    const text = std.mem.trim(u8, result.stdout, " \t\r\n");
+    return std.fmt.parseInt(std.posix.pid_t, text, 10) catch null;
+}
+
 /// Discard a STALE ORPHAN tmux session for a slot before spawning a fresh
 /// terminal there — otherwise `new-session -A` would ATTACH to the orphan and
 /// the "new" terminal would mirror it. Only kills a session with ZERO attached

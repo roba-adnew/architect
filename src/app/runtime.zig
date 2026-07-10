@@ -15,6 +15,7 @@ const ui_host = @import("ui_host.zig");
 const test_probe = @import("test_probe.zig");
 const worktree = @import("worktree.zig");
 const control = @import("control.zig");
+const hosting_mod = @import("../session/hosting.zig");
 const notify = @import("../session/notify.zig");
 const notify_sound = @import("../notify_sound.zig");
 const session_state = @import("../session/state.zig");
@@ -823,7 +824,6 @@ fn handleExternalSpawnRequest(
         };
     }
 
-    session_interaction_component.setStatus(plan.slot_index, .running);
     session_interaction_component.setAttention(plan.slot_index, false, now);
     session_interaction_component.clearSelection(anim_state.focused_session);
     session_interaction_component.clearSelection(plan.slot_index);
@@ -1912,6 +1912,13 @@ pub fn run() !void {
     };
     var pending_comment_send: ?PendingCommentSend = null;
 
+    // "hosting" badge state for the hidden switcher. Detection spawns
+    // subprocesses, so it only polls while the switcher modal is open.
+    const hosting_poll_interval_ms: i64 = 5000;
+    var hosting_last_poll_ms: ?i64 = null;
+    const hosting_flags = try allocator.alloc(bool, sessions.len);
+    defer allocator.free(hosting_flags);
+
     const session_interaction_component = try ui_mod.SessionInteractionComponent.init(allocator, sessions, &font);
     try ui.register(session_interaction_component.asComponent());
 
@@ -2343,7 +2350,6 @@ pub fn run() !void {
                                 relaunch_trace_frames = 120;
                                 try session.relaunch(working_dir.cwd_z, &loop);
                                 session_interaction_component.resetView(session_idx);
-                                session_interaction_component.setStatus(session_idx, .running);
                                 session_interaction_component.setAttention(session_idx, false, now);
                                 session.markDirty();
                                 grid.cancelResize();
@@ -2677,7 +2683,6 @@ pub fn run() !void {
 
                             // Spawn new terminal
                             try sessions[new_idx].ensureSpawnedFresh(working_dir.cwd_z, &loop);
-                            session_interaction_component.setStatus(new_idx, .running);
                             session_interaction_component.setAttention(new_idx, false, now);
 
                             // Update cell dimensions for new grid
@@ -2709,7 +2714,6 @@ pub fn run() !void {
                                 defer working_dir.deinit(allocator);
 
                                 try sessions[next_free_idx].ensureSpawnedFresh(working_dir.cwd_z, &loop);
-                                session_interaction_component.setStatus(next_free_idx, .running);
                                 session_interaction_component.setAttention(next_free_idx, false, now);
 
                                 session_interaction_component.clearSelection(anim_state.focused_session);
@@ -2733,7 +2737,7 @@ pub fn run() !void {
 
                         if (anim_state.mode == .Grid) {
                             try sessions[idx].ensureSpawnedWithLoop(&loop);
-                            session_interaction_component.setStatus(idx, .running);
+                            session_interaction_component.acknowledgeDone(idx);
                             session_interaction_component.setAttention(idx, false, now);
 
                             const grid_row: c_int = @intCast(idx / grid.cols);
@@ -2764,7 +2768,7 @@ pub fn run() !void {
                             try sessions[idx].ensureSpawnedWithLoop(&loop);
                             session_interaction_component.clearSelection(anim_state.focused_session);
                             session_interaction_component.clearSelection(idx);
-                            session_interaction_component.setStatus(idx, .running);
+                            session_interaction_component.acknowledgeDone(idx);
                             session_interaction_component.setAttention(idx, false, now);
                             anim_state.focused_session = idx;
 
@@ -2835,7 +2839,7 @@ pub fn run() !void {
                         const clicked_session = anim_state.focused_session;
                         try sessions[clicked_session].ensureSpawnedWithLoop(&loop);
 
-                        session_interaction_component.setStatus(clicked_session, .running);
+                        session_interaction_component.acknowledgeDone(clicked_session);
                         session_interaction_component.setAttention(clicked_session, false, now);
 
                         const grid_row: c_int = @intCast(clicked_session / grid.cols);
@@ -3078,6 +3082,21 @@ pub fn run() !void {
             }
         }
 
+        if (hidden_switcher_comp_ptr.open) {
+            const due = hosting_last_poll_ms == null or now - hosting_last_poll_ms.? >= hosting_poll_interval_ms;
+            if (due) {
+                hosting_last_poll_ms = now;
+                // ponytail: synchronous subprocess poll (~tens of ms) while a
+                // static modal is up; move to a worker thread if it hitches.
+                hosting_mod.detectHosting(allocator, sessions, hosting_flags);
+                for (hosting_flags, 0..) |flag, i| {
+                    session_interaction_component.setHosting(i, flag);
+                }
+            }
+        } else {
+            hosting_last_poll_ms = null; // re-poll immediately on next open
+        }
+
         var focused_has_foreground_process = foreground_cache.get(now, anim_state.focused_session, sessions);
         const ui_update_host = ui_host.makeUiHost(
             now,
@@ -3115,7 +3134,7 @@ pub fn run() !void {
 
                 session_interaction_component.clearSelection(anim_state.focused_session);
                 try sessions[idx].ensureSpawnedWithLoop(&loop);
-                session_interaction_component.setStatus(idx, .running);
+                session_interaction_component.acknowledgeDone(idx);
                 session_interaction_component.setAttention(idx, false, now);
 
                 const grid_row: c_int = @intCast(idx / grid.cols);
@@ -3298,7 +3317,6 @@ pub fn run() !void {
                     continue;
                 };
 
-                session_interaction_component.setStatus(switch_action.session, .running);
                 session_interaction_component.setAttention(switch_action.session, false, now);
                 ui.showToast("Switched worktree", now);
             },
@@ -3352,7 +3370,6 @@ pub fn run() !void {
                     log.warn("session {d}: failed to record cwd: {}", .{ create_action.session, err });
                 };
 
-                session_interaction_component.setStatus(create_action.session, .running);
                 session_interaction_component.setAttention(create_action.session, false, now);
                 ui.showToast("Creating worktree…", now);
             },
@@ -3401,7 +3418,6 @@ pub fn run() !void {
                     continue;
                 };
 
-                session_interaction_component.setStatus(remove_action.session, .running);
                 session_interaction_component.setAttention(remove_action.session, false, now);
                 ui.showToast("Removing worktree…", now);
             },
@@ -3429,7 +3445,6 @@ pub fn run() !void {
                 // Note: appendRecentFolder is handled by the per-frame updateCwd loop
                 // to avoid double-counting when cwd changes are detected
 
-                session_interaction_component.setStatus(cd_action.session, .running);
                 session_interaction_component.setAttention(cd_action.session, false, now);
 
                 const basename = std.fs.path.basename(cd_action.path);

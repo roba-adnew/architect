@@ -3,7 +3,13 @@ const ghostty_vt = @import("ghostty-vt");
 const scrollbar = @import("components/scrollbar.zig");
 
 pub const SessionViewState = struct {
-    status: app_state.SessionStatus = .running,
+    status: app_state.SessionStatus = .idle,
+    /// True once any Claude notify-hook status has arrived for this session.
+    /// Distinguishes "Claude is idle" from "Claude never ran here".
+    claude_seen: bool = false,
+    /// The session's process tree owns a listening TCP socket (a local server).
+    /// Refreshed by runtime's hosting poll while the hidden switcher is open.
+    hosting: bool = false,
     attention: bool = false,
     is_viewing_scrollback: bool = false,
     scroll_velocity: f32 = 0.0,
