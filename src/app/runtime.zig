@@ -302,6 +302,28 @@ fn seedSessionAgentMetadataFromEntry(
     session.agent_metadata_captured = true;
 }
 
+/// Give sessions[slot] the persist index `want`, swapping with whichever
+/// not-yet-spawned slot currently holds it. Indices start as the identity
+/// permutation at init and swaps preserve uniqueness, so two terminals can
+/// never build the same tmux session name.
+fn claimPersistIndex(sessions: []const *SessionState, slot: usize, want: usize) void {
+    if (sessions[slot].persist_index == want) return;
+    for (sessions) |other| {
+        if (other.persist_index != want) continue;
+        if (other.spawned) {
+            // Another live terminal already owns this identity (duplicate or
+            // corrupt entry); keep the slot's own index rather than collide.
+            log.warn("persist index {d} already in use by a live session; slot {d} keeps {d}", .{ want, slot, sessions[slot].persist_index });
+            return;
+        }
+        other.persist_index = sessions[slot].persist_index;
+        sessions[slot].persist_index = want;
+        return;
+    }
+    // Nobody holds it (index beyond the slot range or corrupt file) — safe to take.
+    sessions[slot].persist_index = want;
+}
+
 fn terminalEntriesMatchSessions(
     persistence: *const config_mod.Persistence,
     sessions: []const *SessionState,
@@ -319,6 +341,7 @@ fn terminalEntriesMatchSessions(
 
         if (!std.mem.eql(u8, entry.path, path)) return false;
         if (entry.hidden != session.hidden) return false;
+        if (entry.persist_index == null or entry.persist_index.? != session.persist_index) return false;
         if (!optionalStringEql(entry.agent_type, agent_type)) return false;
         if (!optionalStringEql(entry.agent_session_id, agent_session_id)) return false;
 
@@ -342,7 +365,7 @@ fn syncPersistenceTerminalEntriesFromSessions(
 
         const agent_type = persistedAgentType(session);
         const agent_session_id = persistedAgentSessionId(session, agent_type);
-        try persistence.appendTerminalEntry(allocator, path, agent_type, agent_session_id, session.hidden);
+        try persistence.appendTerminalEntry(allocator, path, agent_type, agent_session_id, session.hidden, session.persist_index);
     }
     return true;
 }
@@ -1841,16 +1864,48 @@ pub fn run() !void {
         if (dir_buf) |buf| {
             const dir: [:0]const u8 = buf[0..entry.path.len :0];
 
+            // Reclaim the terminal's own tmux identity BEFORE spawning, so
+            // `new-session -A` targets the exact session it used last run.
+            // Restoring by grid position instead orphaned any terminal whose
+            // persist index had drifted from its position, and the reaper
+            // below then killed the orphan (agent and all).
+            if (entry.persist_index) |want| claimPersistIndex(sessions, new_idx, want);
+
+            // An id can appear on multiple entries (from a stale-hook smear);
+            // resuming it twice would fork one conversation into two
+            // terminals. First entry wins; later ones start plain shells.
+            const duplicate_resume_id: ?[]const u8 = if (entry.agent_session_id) |id| blk: {
+                for (restored_slice[0..new_idx]) |prev| {
+                    const prev_id = prev.agent_session_id orelse continue;
+                    if (std.mem.eql(u8, prev_id, id)) break :blk id;
+                }
+                break :blk null;
+            } else null;
+
             // Build the resume command BEFORE spawning: it is injected as
             // ARCHITECT_RESUME_CMD into the shell env and run once by the wrapper rc
             // after the user's rc loads — no stdin race, can't be eaten by a startup prompt.
-            setResumeCommandFromEntry(sessions[new_idx], entry, allocator);
+            if (duplicate_resume_id) |id| {
+                log.warn("restored terminal {d}: agent session id {s} already claimed by an earlier terminal; not resuming it twice", .{ new_idx, id });
+            } else {
+                setResumeCommandFromEntry(sessions[new_idx], entry, allocator);
+            }
 
+            const expected_session = tmux.hasSession(allocator, sessions[new_idx].persist_index);
             sessions[new_idx].ensureSpawnedWithDir(dir, &loop) catch |err| {
                 std.debug.print("Failed to spawn restored terminal {d}: {}\n", .{ new_idx, err });
             };
             if (sessions[new_idx].spawned) {
-                seedSessionAgentMetadataFromEntry(sessions[new_idx], entry, allocator);
+                if (sessions[new_idx].tmux_backed) {
+                    if (expected_session) {
+                        log.info("restored terminal {d}: reattached to tmux persist index {d}", .{ new_idx, sessions[new_idx].persist_index });
+                    } else {
+                        log.warn("restored terminal {d}: no tmux session for persist index {d}; started fresh (resume fallback)", .{ new_idx, sessions[new_idx].persist_index });
+                    }
+                }
+                if (duplicate_resume_id == null) {
+                    seedSessionAgentMetadataFromEntry(sessions[new_idx], entry, allocator);
+                }
                 // Restore as hidden: alive but out of the grid until revealed.
                 sessions[new_idx].hidden = entry.hidden;
             }
@@ -1864,8 +1919,25 @@ pub fn run() !void {
 
     // Now that every restored/first session has reattached and holds a client,
     // drain the socket's detached-session graveyard (crashed instances, closed
-    // terminals, pre-epoch fossils). Ours read as attached, so they're spared.
-    if (sessions[0].tmux_backed) tmux.reapDetachedSessions(allocator);
+    // terminals, pre-epoch fossils). Ours read as attached, so they're spared,
+    // and so are the persisted indices we still want (a spawn failure above
+    // must not cost the agent its session). Same-epoch sessions are only fair
+    // game once every restored entry carried an index — a legacy file without
+    // them can't tell a graveyard fossil from a live terminal's session.
+    if (sessions[0].tmux_backed) {
+        var keep_buf: [grid_layout.max_terminals]usize = undefined;
+        var keep_len: usize = 0;
+        var all_indexed = true;
+        for (restored_slice) |entry| {
+            if (entry.persist_index) |pi| {
+                if (keep_len < keep_buf.len) {
+                    keep_buf[keep_len] = pi;
+                    keep_len += 1;
+                }
+            } else all_indexed = false;
+        }
+        tmux.reapDetachedSessions(allocator, keep_buf[0..keep_len], all_indexed);
+    }
 
     const session_ui_info = try allocator.alloc(ui_mod.SessionUiInfo, grid_layout.max_terminals);
     defer allocator.free(session_ui_info);
@@ -3892,6 +3964,39 @@ test "planExternalSpawnSlot expands on the visible count, not the spawned count"
     try std.testing.expectEqual(@as(usize, 4), plan.slot_index);
 }
 
+test "claimPersistIndex swaps identities and never duplicates them" {
+    var s0: SessionState = undefined;
+    s0.spawned = false;
+    s0.persist_index = 0;
+    var s1: SessionState = undefined;
+    s1.spawned = false;
+    s1.persist_index = 1;
+    var s2: SessionState = undefined;
+    s2.spawned = false;
+    s2.persist_index = 2;
+    const sessions = [_]*SessionState{ &s0, &s1, &s2 };
+
+    // Slot 0 reclaims identity 2 (its terminal was architect-<epoch>-2 last run):
+    // the previous holder inherits slot 0's default so indices stay unique.
+    claimPersistIndex(&sessions, 0, 2);
+    try std.testing.expectEqual(@as(usize, 2), s0.persist_index);
+    try std.testing.expectEqual(@as(usize, 0), s2.persist_index);
+
+    // Claiming an index nobody holds (drifted beyond the slot range) just takes it.
+    claimPersistIndex(&sessions, 1, 141);
+    try std.testing.expectEqual(@as(usize, 141), s1.persist_index);
+
+    // A live session's identity is never stolen (corrupt/duplicate entry).
+    s0.spawned = true;
+    claimPersistIndex(&sessions, 2, 2);
+    try std.testing.expectEqual(@as(usize, 2), s0.persist_index); // live holder keeps it
+    try std.testing.expectEqual(@as(usize, 0), s2.persist_index); // claimant keeps its own
+
+    // No-op when the slot already holds what it wants.
+    claimPersistIndex(&sessions, 1, 141);
+    try std.testing.expectEqual(@as(usize, 141), s1.persist_index);
+}
+
 test "compactSessions parks hidden sessions at the tail" {
     // 5 slots: visible(id2), hidden(id0), visible(id1), free, free. After compaction
     // the visible sessions must pack to the front in id order and the hidden session
@@ -4279,7 +4384,7 @@ test "syncPersistenceTerminalEntriesFromSessions keeps restored agent metadata (
     var persistence = config_mod.Persistence.init(allocator);
     defer persistence.deinit(allocator);
 
-    try persistence.appendTerminalEntry(allocator, "/one", "codex", "seed-id", false);
+    try persistence.appendTerminalEntry(allocator, "/one", "codex", "seed-id", false, 0);
 
     var session: SessionState = undefined;
     session.slot_index = 0;

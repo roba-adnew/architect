@@ -460,15 +460,76 @@ pub fn discardOrphanSession(allocator: std.mem.Allocator, persist_index: usize) 
     _ = child.spawnAndWait() catch return;
 }
 
+/// Whether a persistent session for this index exists on the socket right now.
+/// Lets the restore path tell "reattached" apart from "started fresh".
+pub fn hasSession(allocator: std.mem.Allocator, persist_index: usize) bool {
+    const tmux_path = findOnPath(allocator, "tmux") orelse return false;
+    defer allocator.free(tmux_path);
+
+    const dir = runtimeDir();
+    const socket_path = allocZ(allocator, "{s}/architect-tmux.sock", .{dir}) catch return false;
+    defer allocator.free(socket_path);
+    const target = sessionName(allocator, persist_index) orelse return false;
+    defer allocator.free(target);
+    // '=' prefix: exact-name match, not tmux's default prefix matching.
+    const exact = allocZ(allocator, "={s}", .{target}) catch return false;
+    defer allocator.free(exact);
+
+    const result = std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = &[_][]const u8{ tmux_path, "-S", socket_path, "has-session", "-t", exact },
+    }) catch return false;
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+    return switch (result.term) {
+        .Exited => |code| code == 0,
+        else => false,
+    };
+}
+
+const ReapVerdict = enum {
+    reap,
+    /// A caller-protected index: a persisted terminal's session. If it shows
+    /// up detached here, the reattach that should have claimed it went wrong —
+    /// killing it would take the agent with it.
+    spare_kept,
+    /// Same-epoch but the caller lacks full index information (legacy file);
+    /// can't tell a fossil from a live terminal's session, so keep it.
+    spare_same_epoch,
+    /// Not one of our names; never touch it.
+    spare_foreign,
+};
+
+/// Decide the fate of a DETACHED session. `keep` holds persist indices that
+/// must survive; `reap_same_epoch` is false when the caller can't vouch for
+/// the full index set. Different-epoch (or pre-epoch) architect names are
+/// always fossils: their run can never reattach to them again.
+fn classifyDetachedSession(name: []const u8, epoch: []const u8, keep: []const usize, reap_same_epoch: bool) ReapVerdict {
+    if (!std.mem.startsWith(u8, name, "architect-")) return .spare_foreign;
+    if (epoch.len == 0) return .reap; // epoch unset: everything is legacy
+
+    var prefix_buf: [96]u8 = undefined;
+    const prefix = std.fmt.bufPrint(&prefix_buf, "architect-{s}-", .{epoch}) catch return .spare_same_epoch;
+    if (!std.mem.startsWith(u8, name, prefix)) return .reap; // other/pre-epoch fossil
+
+    const index = std.fmt.parseInt(usize, name[prefix.len..], 10) catch return .spare_same_epoch;
+    for (keep) |k| {
+        if (k == index) return .spare_kept;
+    }
+    return if (reap_same_epoch) .reap else .spare_same_epoch;
+}
+
 /// Drain the session graveyard at startup. The shared socket accumulates a
 /// detached session for every terminal that ever ran and was never reattached
 /// (crashed instances, closed terminals, pre-epoch fossils), so it grows without
 /// bound — dozens piled up in practice. Call ONCE, AFTER this run has reattached
 /// to all of its own sessions (so they hold a client and read as attached): kill
-/// every DETACHED session on the socket. Attached sessions — ours and any other
-/// live instance's — are spared, so this can't nuke a running pane. Best-effort:
-/// any failure is a silent no-op. See config.Persistence.persist_epoch.
-pub fn reapDetachedSessions(allocator: std.mem.Allocator) void {
+/// DETACHED sessions on the socket, except `keep` indices (persisted terminals
+/// whose reattach may have failed — killing those loses the agent) and, when
+/// `reap_same_epoch` is false, anything from our own epoch. Attached sessions —
+/// ours and any other live instance's — are never touched. Best-effort: any
+/// failure is a silent no-op. See config.Persistence.persist_epoch.
+pub fn reapDetachedSessions(allocator: std.mem.Allocator, keep: []const usize, reap_same_epoch: bool) void {
     const tmux_path = findOnPath(allocator, "tmux") orelse return;
     defer allocator.free(tmux_path);
 
@@ -498,6 +559,18 @@ pub fn reapDetachedSessions(allocator: std.mem.Allocator) void {
         if (!std.mem.startsWith(u8, line, "0 ")) continue; // attached (or malformed) — spare it
         const name = line[2..];
         if (name.len == 0) continue;
+        switch (classifyDetachedSession(name, epoch_buf[0..epoch_len], keep, reap_same_epoch)) {
+            .reap => {},
+            .spare_kept => {
+                log.warn("reap: sparing detached session {s} — it belongs to a persisted terminal (missed reattach?)", .{name});
+                continue;
+            },
+            .spare_same_epoch => {
+                log.info("reap: sparing same-epoch session {s} (incomplete index info this run)", .{name});
+                continue;
+            },
+            .spare_foreign => continue,
+        }
         var child = std.process.Child.init(&[_][]const u8{
             tmux_path, "-S", socket_path, "kill-session", "-t", name,
         }, allocator);
@@ -508,9 +581,30 @@ pub fn reapDetachedSessions(allocator: std.mem.Allocator) void {
             log.debug("reap: kill-session {s} failed: {}", .{ name, err });
             continue;
         };
+        log.info("reaped detached tmux session {s}", .{name});
         reaped += 1;
     }
     if (reaped > 0) log.info("reaped {d} detached tmux session(s)", .{reaped});
+}
+
+test "classifyDetachedSession: keep set, epochs, malformed names" {
+    const epoch = "abc123";
+    const keep = [_]usize{ 0, 141 };
+
+    // Same epoch, protected index -> spared even when same-epoch reaping is on.
+    try std.testing.expectEqual(ReapVerdict.spare_kept, classifyDetachedSession("architect-abc123-141", epoch, &keep, true));
+    // Same epoch, unprotected index -> fair game only with full index info.
+    try std.testing.expectEqual(ReapVerdict.reap, classifyDetachedSession("architect-abc123-7", epoch, &keep, true));
+    try std.testing.expectEqual(ReapVerdict.spare_same_epoch, classifyDetachedSession("architect-abc123-7", epoch, &keep, false));
+    // Different epoch or legacy pre-epoch name -> always a fossil.
+    try std.testing.expectEqual(ReapVerdict.reap, classifyDetachedSession("architect-deadbeef-3", epoch, &keep, false));
+    try std.testing.expectEqual(ReapVerdict.reap, classifyDetachedSession("architect-3", epoch, &keep, false));
+    // Same-epoch prefix with a malformed index -> keep (can't reason about it).
+    try std.testing.expectEqual(ReapVerdict.spare_same_epoch, classifyDetachedSession("architect-abc123-x", epoch, &keep, true));
+    // Not ours at all.
+    try std.testing.expectEqual(ReapVerdict.spare_foreign, classifyDetachedSession("some-other-session", epoch, &keep, true));
+    // Epoch unset (legacy install): old behavior, reap any architect session.
+    try std.testing.expectEqual(ReapVerdict.reap, classifyDetachedSession("architect-3", "", &keep, false));
 }
 
 /// tmux's `pane_current_command` for an idle pane is the shell name (e.g. "zsh");

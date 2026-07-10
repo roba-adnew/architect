@@ -390,6 +390,13 @@ pub const Persistence = struct {
         agent_session_id: ?[]const u8 = null,
         /// Restored as spawned-but-hidden (pulled out of the grid via Cmd+J).
         hidden: bool = false,
+        /// The terminal's tmux identity (`architect-<epoch>-<persist_index>`).
+        /// Persisted so a restored terminal reattaches to ITS OWN session —
+        /// restoring by grid position instead silently orphaned any terminal
+        /// whose index had drifted from its position (creates/hides/closes),
+        /// and the startup reaper then killed the orphan. Null = legacy file
+        /// without indices; restore falls back to the slot position.
+        persist_index: ?usize = null,
     };
 
     window: WindowConfig = .{},
@@ -428,6 +435,7 @@ pub const Persistence = struct {
         terminal_agent_types: ?[]const []const u8 = null,
         terminal_session_ids: ?[]const []const u8 = null,
         terminal_hidden: ?[]const bool = null,
+        terminal_persist_indices: ?[]const i64 = null,
         recent_folders: ?toml.HashMap(u32) = null,
         focused_session: usize = 0,
         zoomed: bool = false,
@@ -532,7 +540,11 @@ pub const Persistence = struct {
                         idx < flags.len and flags[idx]
                     else
                         false;
-                    try persistence.appendTerminalEntry(allocator, path, agent_type, agent_session_id, hidden);
+                    const persist_index: ?usize = if (result.value.terminal_persist_indices) |indices|
+                        if (idx < indices.len and indices[idx] >= 0) @intCast(indices[idx]) else null
+                    else
+                        null;
+                    try persistence.appendTerminalEntry(allocator, path, agent_type, agent_session_id, hidden, persist_index);
                 }
             }
 
@@ -558,7 +570,7 @@ pub const Persistence = struct {
 
             if (result.value.terminals) |paths| {
                 for (paths) |path| {
-                    try persistence.appendTerminalEntry(allocator, path, null, null, false);
+                    try persistence.appendTerminalEntry(allocator, path, null, null, false, null);
                 }
             }
 
@@ -656,6 +668,18 @@ pub const Persistence = struct {
                 try writer.writeAll("]\n");
             }
 
+            // tmux identity per terminal; -1 = unknown (never spawned with tmux).
+            try writer.writeAll("terminal_persist_indices = [");
+            for (self.terminal_entries.items, 0..) |entry, idx| {
+                if (idx != 0) try writer.writeAll(", ");
+                if (entry.persist_index) |pi| {
+                    try writer.print("{d}", .{pi});
+                } else {
+                    try writer.writeAll("-1");
+                }
+            }
+            try writer.writeAll("]\n");
+
             // Only emit terminal_hidden when something is hidden, so the common
             // case keeps a clean file; absent => all visible on load.
             const has_hidden = for (self.terminal_entries.items) |entry| {
@@ -715,6 +739,7 @@ pub const Persistence = struct {
         agent_type: ?[]const u8,
         agent_session_id: ?[]const u8,
         hidden: bool,
+        persist_index: ?usize,
     ) !void {
         const path_copy = try allocator.dupe(u8, path);
         errdefer allocator.free(path_copy);
@@ -736,6 +761,7 @@ pub const Persistence = struct {
             .agent_type = agent_type_copy,
             .agent_session_id = agent_session_id_copy,
             .hidden = hidden,
+            .persist_index = persist_index,
         });
     }
 
@@ -929,7 +955,7 @@ pub const Persistence = struct {
         std.mem.sort(LegacyTerminalEntry, entries.items, {}, LegacyTerminalEntry.lessThan);
 
         for (entries.items) |entry| {
-            try self.appendTerminalEntry(allocator, entry.path, null, null, false);
+            try self.appendTerminalEntry(allocator, entry.path, null, null, false, null);
         }
     }
 
@@ -1481,15 +1507,17 @@ test "Persistence.appendTerminalEntry preserves order and fields" {
     var persistence = Persistence.init(allocator);
     defer persistence.deinit(allocator);
 
-    try persistence.appendTerminalEntry(allocator, "/one", null, null, false);
-    try persistence.appendTerminalEntry(allocator, "/two", "claude", "abc-123", false);
+    try persistence.appendTerminalEntry(allocator, "/one", null, null, false, null);
+    try persistence.appendTerminalEntry(allocator, "/two", "claude", "abc-123", false, 141);
 
     try std.testing.expectEqual(@as(usize, 2), persistence.terminal_entries.items.len);
     try std.testing.expectEqualStrings("/one", persistence.terminal_entries.items[0].path);
     try std.testing.expect(persistence.terminal_entries.items[0].agent_type == null);
+    try std.testing.expect(persistence.terminal_entries.items[0].persist_index == null);
     try std.testing.expectEqualStrings("/two", persistence.terminal_entries.items[1].path);
     try std.testing.expectEqualStrings("claude", persistence.terminal_entries.items[1].agent_type.?);
     try std.testing.expectEqualStrings("abc-123", persistence.terminal_entries.items[1].agent_session_id.?);
+    try std.testing.expectEqual(@as(?usize, 141), persistence.terminal_entries.items[1].persist_index);
 }
 
 test "Persistence.ensurePersistEpoch mints once and serializes round-trip" {
@@ -1573,9 +1601,9 @@ test "Persistence save/load round-trip preserves all fields" {
     original.window.y = 200;
     original.font_size = 16;
     original.grid_font_scale = 1.5;
-    try original.appendTerminalEntry(allocator, "/home/user/project1", null, null, false);
-    try original.appendTerminalEntry(allocator, "/home/user/project2", "claude", "abc-123-def", true);
-    try original.appendTerminalEntry(allocator, "/tmp/test", null, null, false);
+    try original.appendTerminalEntry(allocator, "/home/user/project1", null, null, false, 0);
+    try original.appendTerminalEntry(allocator, "/home/user/project2", "claude", "abc-123-def", true, 141);
+    try original.appendTerminalEntry(allocator, "/tmp/test", null, null, false, null);
 
     try original.saveToPath(allocator, test_file);
 
@@ -1611,7 +1639,11 @@ test "Persistence save/load round-trip preserves all fields" {
                 idx < flags.len and flags[idx]
             else
                 false;
-            try loaded.appendTerminalEntry(allocator, path, agent_type, agent_session_id, hidden);
+            const persist_index: ?usize = if (result.value.terminal_persist_indices) |indices|
+                if (idx < indices.len and indices[idx] >= 0) @intCast(indices[idx]) else null
+            else
+                null;
+            try loaded.appendTerminalEntry(allocator, path, agent_type, agent_session_id, hidden, persist_index);
         }
     }
 
@@ -1636,6 +1668,7 @@ test "Persistence save/load round-trip preserves all fields" {
             try std.testing.expect(loaded_entry.agent_session_id == null);
         }
         try std.testing.expectEqual(orig.hidden, loaded_entry.hidden);
+        try std.testing.expectEqual(orig.persist_index, loaded_entry.persist_index);
     }
 }
 

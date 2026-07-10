@@ -314,6 +314,7 @@ terminals = [
 
 terminal_agent_types = ["claude", "", ""]
 terminal_session_ids = ["550e8400-e29b-41d4-a716-446655440000", "", ""]
+terminal_persist_indices = [0, 141, 2]
 terminal_hidden = [false, false, true]
 
 [window]
@@ -341,6 +342,7 @@ y = 50
 | `terminals` | Working directories for each terminal (ordered by session index) |
 | `terminal_agent_types` | Agent type for each terminal slot (`"claude"`, `"codex"`, `"gemini"`), or an empty string (`""`) when absent. Present only when at least one terminal had a running agent at quit time. |
 | `terminal_session_ids` | Session UUID for each terminal slot, or an empty string (`""`) when absent. Written alongside `terminal_agent_types` when an agent session ID was captured at quit. On next launch, Architect writes the corresponding resume command (e.g., `claude --resume <uuid>`) to the terminal as soon as the shell is ready. |
+| `terminal_persist_indices` | Each terminal's tmux identity (`architect-<epoch>-<index>`), so a restored terminal reattaches to its own live session instead of one derived from its grid position. `-1` = unknown. Absent in older files: terminals then reattach by position, and same-epoch graveyard sessions are spared for that one launch. |
 | `terminal_hidden` | Per-terminal boolean: `true` for terminals hidden from the grid (⌘J) at quit time, restored as spawned-but-hidden (revealed via ⌘⇧J). Present only when at least one terminal is hidden; absent means all visible. |
 | `[window]` | Last window position and dimensions |
 | `[recent_folders]` | Directory visit counts (up to 10 entries, sorted by frequency for `Cmd+O` overlay) |
@@ -353,7 +355,7 @@ On launch, Architect restores terminals to their saved working directories. The 
 
 Note: Terminal cwd persistence and agent session resumption are currently macOS-only.
 
-Older `persistence.toml` files that used the `[terminals]` table or `recent_folders` array are migrated automatically. Files without `terminal_agent_types` / `terminal_session_ids` / `terminal_hidden` are loaded normally (no agent resumption, all terminals visible). Files without `persist_epoch` get one minted and saved on first launch.
+Older `persistence.toml` files that used the `[terminals]` table or `recent_folders` array are migrated automatically. Files without `terminal_agent_types` / `terminal_session_ids` / `terminal_hidden` are loaded normally (no agent resumption, all terminals visible). Files without `persist_epoch` get one minted and saved on first launch. Files without `terminal_persist_indices` restore by position for one launch (indices are saved from then on); during that launch same-epoch detached tmux sessions are not reaped, since they can't be told apart from live terminals' sessions.
 
 ## Resetting Configuration
 
