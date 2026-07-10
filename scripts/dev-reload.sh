@@ -22,7 +22,9 @@ cd "$ROOT"
 # nothing and the live-agent guard below would no-op while the reload still
 # quits the app and kills its agents. ps lists it reliably.
 APP_EXE="/Applications/Architect.app/Contents/MacOS/architect"
-daily_pid() { ps -Axo pid=,comm= | awk -v exe="$APP_EXE" '$2 == exe { print $1; exit }'; }
+# `|| true`: awk's early `exit` can SIGPIPE ps mid-write (load-dependent), and
+# under set -e -o pipefail that 141 silently kills the whole script.
+daily_pid() { ps -Axo pid=,comm= | awk -v exe="$APP_EXE" '$2 == exe { print $1; exit }' || true; }
 
 # Returns 0 if any descendant of pid $1 looks like a running agent CLI
 # (claude/codex/gemini) — i.e. restarting the app would kill a live agent.
