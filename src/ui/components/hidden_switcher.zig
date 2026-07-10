@@ -7,7 +7,6 @@ const geom = @import("../../geom.zig");
 const dpi = @import("../../dpi.zig");
 const primitives = @import("../../gfx/primitives.zig");
 const search_utils = @import("search_utils.zig");
-const app_state = @import("../../app/app_state.zig");
 const FirstFrameGuard = @import("../first_frame_guard.zig").FirstFrameGuard;
 
 const log = std.log.scoped(.hidden_switcher);

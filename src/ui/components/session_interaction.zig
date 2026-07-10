@@ -131,11 +131,7 @@ pub const SessionInteractionComponent = struct {
     /// "working"/"needs you"/"done"; user interaction never fakes a status.
     pub fn setStatus(self: *SessionInteractionComponent, idx: usize, status: app_state.SessionStatus) void {
         if (idx >= self.views.len or idx >= self.sessions.len) return;
-        const view = &self.views[idx];
-        view.claude_seen = true;
-        if (view.status == status) return;
-        view.status = status;
-        self.sessions[idx].markDirty();
+        if (self.views[idx].applyClaudeStatus(status)) self.sessions[idx].markDirty();
     }
 
     pub fn setHosting(self: *SessionInteractionComponent, idx: usize, hosting: bool) void {
@@ -150,10 +146,7 @@ pub const SessionInteractionComponent = struct {
     /// sticky as an attention cue only until the user looks at the terminal.
     pub fn acknowledgeDone(self: *SessionInteractionComponent, idx: usize) void {
         if (idx >= self.views.len or idx >= self.sessions.len) return;
-        const view = &self.views[idx];
-        if (view.status != .done) return;
-        view.status = .idle;
-        self.sessions[idx].markDirty();
+        if (self.views[idx].acknowledgeDone()) self.sessions[idx].markDirty();
     }
 
     pub fn setAttention(self: *SessionInteractionComponent, idx: usize, attention: bool, now_ms: i64) void {
@@ -1626,6 +1619,30 @@ test "fresh views are idle with no Claude history or hosting flag" {
     try testing.expectEqual(app_state.SessionStatus.idle, view.status);
     try testing.expect(!view.claude_seen);
     try testing.expect(!view.hosting);
+}
+
+test "applyClaudeStatus records claude_seen and reports visible changes" {
+    var view = view_state.SessionViewState{};
+    // First status: marks claude_seen and changes the visible status.
+    try testing.expect(view.applyClaudeStatus(.running));
+    try testing.expect(view.claude_seen);
+    try testing.expectEqual(app_state.SessionStatus.running, view.status);
+    // Re-applying the same status is not a visible change, but claude_seen stays.
+    try testing.expect(!view.applyClaudeStatus(.running));
+    try testing.expect(view.claude_seen);
+}
+
+test "acknowledgeDone demotes only done, leaving other statuses untouched" {
+    var view = view_state.SessionViewState{};
+    // Non-done statuses are never demoted by an acknowledge.
+    view.status = .running;
+    try testing.expect(!view.acknowledgeDone());
+    try testing.expectEqual(app_state.SessionStatus.running, view.status);
+    // A done status is acknowledged back to idle exactly once.
+    view.status = .done;
+    try testing.expect(view.acknowledgeDone());
+    try testing.expectEqual(app_state.SessionStatus.idle, view.status);
+    try testing.expect(!view.acknowledgeDone());
 }
 
 test "setAttention does not affect nav_wave_start_time" {

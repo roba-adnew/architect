@@ -2792,6 +2792,7 @@ pub fn run() !void {
                             }
                             try grid_nav.navigateGrid(&anim_state, sessions, session_interaction_component, direction, now, true, false, grid.cols, grid.rows, &loop);
                             const new_session = anim_state.focused_session;
+                            session_interaction_component.acknowledgeDone(new_session);
                             session_interaction_component.triggerNavWave(new_session, now);
                             std.debug.print("Grid nav to session {d} (with wrapping)\n", .{new_session});
                         } else if (anim_state.mode == .Full) {
@@ -2805,6 +2806,7 @@ pub fn run() !void {
                                 ui.showHotkey(arrow, now);
                             }
                             try grid_nav.navigateGrid(&anim_state, sessions, session_interaction_component, direction, now, true, animations_enabled, grid.cols, grid.rows, &loop);
+                            session_interaction_component.acknowledgeDone(anim_state.focused_session);
 
                             const buf_size = grid_nav.gridNotificationBufferSize(grid.cols, grid.rows);
                             const notification_buf = try allocator.alloc(u8, buf_size);
@@ -3083,8 +3085,7 @@ pub fn run() !void {
         }
 
         if (hidden_switcher_comp_ptr.open) {
-            const due = hosting_last_poll_ms == null or now - hosting_last_poll_ms.? >= hosting_poll_interval_ms;
-            if (due) {
+            if (hosting_last_poll_ms == null or now - hosting_last_poll_ms.? >= hosting_poll_interval_ms) {
                 hosting_last_poll_ms = now;
                 // ponytail: synchronous subprocess poll (~tens of ms) while a
                 // static modal is up; move to a worker thread if it hitches.
@@ -3198,6 +3199,8 @@ pub fn run() !void {
                 anim_state.mode = .Grid;
                 if (findSessionIndexById(sessions, reveal_id)) |new_idx| {
                     anim_state.focused_session = new_idx;
+                    // Revealing is a focus: acknowledge a sticky "done" back to idle.
+                    session_interaction_component.acknowledgeDone(new_idx);
                 }
                 applyTerminalLayout(sessions, allocator, &font, render_width, render_height, ui_scale, &anim_state, grid.cols, grid.rows, grid_font.cell_width, grid_font.cell_height, &full_cols, &full_rows);
                 ui.showToast("Revealed terminal", now);

@@ -30,6 +30,25 @@ pub const SessionViewState = struct {
         self.* = .{};
     }
 
+    /// Apply a Claude notify-hook status. Marks the session as having run Claude
+    /// (so a later "idle" reads as "resting" not "never ran"). Returns true if
+    /// the visible status changed, so callers can mark the session dirty.
+    pub fn applyClaudeStatus(self: *SessionViewState, status: app_state.SessionStatus) bool {
+        self.claude_seen = true;
+        if (self.status == status) return false;
+        self.status = status;
+        return true;
+    }
+
+    /// Focusing a "done" session acknowledges it back to "idle" — done is a
+    /// sticky attention cue that clears once the user looks at the terminal.
+    /// Returns true if it demoted a "done" status (else a no-op).
+    pub fn acknowledgeDone(self: *SessionViewState) bool {
+        if (self.status != .done) return false;
+        self.status = .idle;
+        return true;
+    }
+
     pub fn clearSelection(self: *SessionViewState) void {
         self.selection_anchor = null;
         self.selection_dragging = false;

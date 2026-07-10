@@ -362,12 +362,10 @@ pub fn paneHasForegroundCommand(allocator: std.mem.Allocator, persist_index: usi
     return !isShellCommand(cmd);
 }
 
-/// The working directory of the persistent session's tmux pane — the dir the
-/// shell/agent is actually in. For a tmux-backed session the PTY child is the
-/// tmux client, whose own process cwd is frozen wherever it was spawned, so
-/// reading it (getCwd) reports the wrong directory; ask tmux for the pane path
-/// instead. Caller owns the returned slice; null if tmux can't be queried.
-pub fn panePath(allocator: std.mem.Allocator, persist_index: usize) ?[]u8 {
+/// Ask tmux to expand `format` for the persistent session's pane
+/// (display-message -p). Returns the trimmed output (caller owns); null if
+/// tmux can't be queried or the output is empty.
+fn paneDisplay(allocator: std.mem.Allocator, persist_index: usize, format: []const u8) ?[]u8 {
     const tmux_path = findOnPath(allocator, "tmux") orelse return null;
     defer allocator.free(tmux_path);
 
@@ -380,7 +378,7 @@ pub fn panePath(allocator: std.mem.Allocator, persist_index: usize) ?[]u8 {
     const result = std.process.Child.run(.{
         .allocator = allocator,
         .argv = &[_][]const u8{
-            tmux_path, "-S", socket_path, "display-message", "-p", "-t", target, "#{pane_current_path}",
+            tmux_path, "-S", socket_path, "display-message", "-p", "-t", target, format,
         },
     }) catch return null;
     defer allocator.free(result.stdout);
@@ -391,12 +389,21 @@ pub fn panePath(allocator: std.mem.Allocator, persist_index: usize) ?[]u8 {
         else => return null,
     }
 
-    const path = std.mem.trimRight(u8, result.stdout, " \t\r\n");
-    if (path.len == 0) return null;
-    return allocator.dupe(u8, path) catch |err| {
-        log.warn("panePath: dupe failed: {}", .{err});
+    const text = std.mem.trimRight(u8, result.stdout, " \t\r\n");
+    if (text.len == 0) return null;
+    return allocator.dupe(u8, text) catch |err| {
+        log.warn("paneDisplay: dupe failed: {}", .{err});
         return null;
     };
+}
+
+/// The working directory of the persistent session's tmux pane — the dir the
+/// shell/agent is actually in. For a tmux-backed session the PTY child is the
+/// tmux client, whose own process cwd is frozen wherever it was spawned, so
+/// reading it (getCwd) reports the wrong directory; ask tmux for the pane path
+/// instead. Caller owns the returned slice; null if tmux can't be queried.
+pub fn panePath(allocator: std.mem.Allocator, persist_index: usize) ?[]u8 {
+    return paneDisplay(allocator, persist_index, "#{pane_current_path}");
 }
 
 /// The pid of the persistent session's pane process (the shell running inside
@@ -404,31 +411,12 @@ pub fn panePath(allocator: std.mem.Allocator, persist_index: usize) ?[]u8 {
 /// process-tree checks must start from the pane pid — the real tree lives
 /// under the tmux server. Best-effort: null if tmux can't be queried.
 pub fn panePid(allocator: std.mem.Allocator, persist_index: usize) ?std.posix.pid_t {
-    const tmux_path = findOnPath(allocator, "tmux") orelse return null;
-    defer allocator.free(tmux_path);
-
-    const dir = runtimeDir();
-    const socket_path = allocZ(allocator, "{s}/architect-tmux.sock", .{dir}) catch return null;
-    defer allocator.free(socket_path);
-    const target = allocZ(allocator, "architect-{d}", .{persist_index}) catch return null;
-    defer allocator.free(target);
-
-    const result = std.process.Child.run(.{
-        .allocator = allocator,
-        .argv = &[_][]const u8{
-            tmux_path, "-S", socket_path, "display-message", "-p", "-t", target, "#{pane_pid}",
-        },
-    }) catch return null;
-    defer allocator.free(result.stdout);
-    defer allocator.free(result.stderr);
-
-    switch (result.term) {
-        .Exited => |code| if (code != 0) return null,
-        else => return null,
-    }
-
-    const text = std.mem.trim(u8, result.stdout, " \t\r\n");
-    return std.fmt.parseInt(std.posix.pid_t, text, 10) catch null;
+    const text = paneDisplay(allocator, persist_index, "#{pane_pid}") orelse return null;
+    defer allocator.free(text);
+    return std.fmt.parseInt(std.posix.pid_t, text, 10) catch |err| {
+        log.warn("panePid: unparsable pane_pid {s}: {}", .{ text, err });
+        return null;
+    };
 }
 
 /// Discard a STALE ORPHAN tmux session for a slot before spawning a fresh
