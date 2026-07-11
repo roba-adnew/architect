@@ -263,6 +263,15 @@ pub const SessionState = struct {
             s.deinit();
         }
 
+        // Consumed: the resume command is baked into this shell's env and runs
+        // once. Keeping it would re-inject it into any later respawn on this
+        // struct (e.g. the close-last-terminal relaunch), resuming a
+        // conversation the user never asked for.
+        if (self.resume_cmd) |cmd| {
+            self.allocator.free(cmd);
+            self.resume_cmd = null;
+        }
+
         var terminal = try ghostty_vt.Terminal.init(self.allocator, .{
             .cols = self.pty_size.ws_col,
             .rows = self.pty_size.ws_row,

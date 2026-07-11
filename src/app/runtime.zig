@@ -1619,6 +1619,9 @@ pub fn run() !void {
         };
     }
     tmux.setEpoch(persistence.persist_epoch);
+    // Heal a server left poisoned by an older build (stale global resume cmd)
+    // before any session spawns or reattaches this run.
+    tmux.scrubStaleGlobalEnv(allocator);
 
     // Seed the live grid font scale: a persisted value (from a previous
     // Cmd+Opt +/- adjustment) wins over the static [font]/[grid] config; then

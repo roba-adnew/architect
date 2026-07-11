@@ -1264,14 +1264,23 @@ pub const Shell = struct {
                 n += 1;
                 argv[n] = sock_z.ptr;
                 n += 1;
-                if (resume_cmd) |rc| {
-                    if (std.fmt.bufPrintZ(&resume_buf, "ARCHITECT_RESUME_CMD={s}", .{rc})) |rz| {
-                        argv[n] = "-e";
-                        n += 1;
-                        argv[n] = rz.ptr;
-                        n += 1;
-                    } else |_| {}
-                }
+                // ALWAYS override ARCHITECT_RESUME_CMD per session — empty when
+                // no resume is intended. The tmux SERVER captures the env of
+                // whichever client started it (which can include a resume
+                // command via the setenv above), and sessions inherit server
+                // globals they don't override — a new terminal would then run a
+                // stale `claude --resume` for a conversation it never owned.
+                argv[n] = "-e";
+                n += 1;
+                argv[n] = blk: {
+                    if (resume_cmd) |rc| {
+                        if (std.fmt.bufPrintZ(&resume_buf, "ARCHITECT_RESUME_CMD={s}", .{rc})) |rz| {
+                            break :blk rz.ptr;
+                        } else |_| {}
+                    }
+                    break :blk "ARCHITECT_RESUME_CMD=";
+                };
+                n += 1;
                 argv[n] = "--";
                 n += 1;
                 argv[n] = shell_path_z;

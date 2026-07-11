@@ -406,6 +406,32 @@ pub fn panePath(allocator: std.mem.Allocator, persist_index: usize) ?[]u8 {
     return paneDisplay(allocator, persist_index, "#{pane_current_path}");
 }
 
+/// Remove ARCHITECT_RESUME_CMD from the tmux server's GLOBAL environment.
+/// The server captures the env of whichever client happened to start it —
+/// including that pane's resume command — and sessions inherit any global
+/// they don't override, so a brand-new terminal could run a stale
+/// `claude --resume` at its first prompt. New spawns now always override the
+/// variable per session; this heals a server poisoned by an older build
+/// without restarting it. Best-effort: no server yet is a no-op.
+pub fn scrubStaleGlobalEnv(allocator: std.mem.Allocator) void {
+    const tmux_path = findOnPath(allocator, "tmux") orelse return;
+    defer allocator.free(tmux_path);
+
+    const dir = runtimeDir();
+    const socket_path = allocZ(allocator, "{s}/architect-tmux.sock", .{dir}) catch return;
+    defer allocator.free(socket_path);
+
+    var child = std.process.Child.init(&[_][]const u8{
+        tmux_path, "-S", socket_path, "set-environment", "-g", "-u", "ARCHITECT_RESUME_CMD",
+    }, allocator);
+    child.stdin_behavior = .Ignore;
+    child.stdout_behavior = .Ignore;
+    child.stderr_behavior = .Ignore;
+    _ = child.spawnAndWait() catch |err| {
+        log.debug("scrubStaleGlobalEnv: {}", .{err});
+    };
+}
+
 /// The pid of the persistent session's pane process (the shell running inside
 /// tmux). For a tmux-backed session the PTY child is the tmux client, so
 /// process-tree checks must start from the pane pid — the real tree lives
