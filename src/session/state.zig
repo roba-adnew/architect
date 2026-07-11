@@ -214,19 +214,20 @@ pub const SessionState = struct {
         };
     }
 
+    // Every spawn wrapper below is FRESH (discards any stale tmux session at
+    // this slot's name first). Only the restore path may attach to an existing
+    // session, by calling ensureSpawnedWithDir directly — otherwise a spawn
+    // whose persist_index matched a leftover (e.g. a closed terminal's) would
+    // `new-session -A` onto it and resurrect it as an exact clone.
+
     pub fn ensureSpawned(self: *SessionState) InitError!void {
-        return self.ensureSpawnedWithDir(null, null);
+        return self.ensureSpawnedFresh(null, null);
     }
 
     pub fn ensureSpawnedWithLoop(self: *SessionState, loop: *xev.Loop) InitError!void {
-        return self.ensureSpawnedWithDir(null, loop);
+        return self.ensureSpawnedFresh(null, loop);
     }
 
-    /// Spawn a brand-new terminal at this slot. Like ensureSpawnedWithDir, but
-    /// first discards any stale tmux session left at this slot by a previous run.
-    /// Otherwise `tmux new-session -A` would ATTACH to that orphan and the "new"
-    /// terminal would mirror the old one. The restore path uses
-    /// ensureSpawnedWithDir directly, which deliberately reattaches.
     pub fn ensureSpawnedFresh(self: *SessionState, working_dir: ?[:0]const u8, loop_opt: ?*xev.Loop) InitError!void {
         if (self.spawned) return;
         tmux.discardOrphanSession(self.allocator, self.persist_index);
@@ -341,7 +342,16 @@ pub const SessionState = struct {
 
     /// Runtime close path used while the event loop is still active.
     /// Keeps active process wait callbacks valid by deferring context destruction.
+    /// Runtime close path: the user discarded this terminal, so its tmux
+    /// session dies with it. Quit teardown deliberately does NOT come through
+    /// here — quit only detaches, leaving sessions alive for the next launch
+    /// to reattach. Without the kill, a closed terminal's session lingered
+    /// detached until the next launch's reaper, and any fresh spawn reusing
+    /// its persist_index could resurrect it as an exact clone.
     pub fn despawn(self: *SessionState, allocator: std.mem.Allocator) void {
+        if (self.tmux_backed and self.spawned) {
+            tmux.killSession(allocator, self.persist_index);
+        }
         self.teardown(allocator, .defer_if_active);
     }
 
