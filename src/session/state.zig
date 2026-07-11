@@ -215,10 +215,9 @@ pub const SessionState = struct {
     }
 
     // Every spawn wrapper below is FRESH (discards any stale tmux session at
-    // this slot's name first). Only the restore path may attach to an existing
-    // session, by calling ensureSpawnedWithDir directly — otherwise a spawn
-    // whose persist_index matched a leftover (e.g. a closed terminal's) would
-    // `new-session -A` onto it and resurrect it as an exact clone.
+    // this slot's name first) — otherwise `new-session -A` would attach to a
+    // leftover (e.g. a closed terminal's) and resurrect it as an exact clone.
+    // Only the restore path attaches, via ensureSpawnedWithDir directly.
 
     pub fn ensureSpawned(self: *SessionState) InitError!void {
         return self.ensureSpawnedFresh(null, null);
@@ -342,12 +341,9 @@ pub const SessionState = struct {
 
     /// Runtime close path used while the event loop is still active.
     /// Keeps active process wait callbacks valid by deferring context destruction.
-    /// Runtime close path: the user discarded this terminal, so its tmux
-    /// session dies with it. Quit teardown deliberately does NOT come through
-    /// here — quit only detaches, leaving sessions alive for the next launch
-    /// to reattach. Without the kill, a closed terminal's session lingered
-    /// detached until the next launch's reaper, and any fresh spawn reusing
-    /// its persist_index could resurrect it as an exact clone.
+    /// The user discarded this terminal, so its tmux session dies with it.
+    /// Quit teardown does NOT come through here — quit only detaches, leaving
+    /// sessions alive for the next launch to reattach.
     pub fn despawn(self: *SessionState, allocator: std.mem.Allocator) void {
         if (self.tmux_backed and self.spawned) {
             tmux.killSession(allocator, self.persist_index);
@@ -504,9 +500,15 @@ pub const SessionState = struct {
         try self.ensureSpawned();
     }
 
+    /// Close-then-respawn of the sole remaining terminal: the user discarded
+    /// it, so kill its tmux session before respawning fresh — `new-session -A`
+    /// would otherwise reattach and resurrect the just-closed shell/agent.
     pub fn relaunch(self: *SessionState, working_dir: ?[:0]const u8, loop_opt: ?*xev.Loop) InitError!void {
+        if (self.tmux_backed and self.spawned) {
+            tmux.killSession(self.allocator, self.persist_index);
+        }
         self.resetForRespawn();
-        try self.ensureSpawnedWithDir(working_dir, loop_opt);
+        try self.ensureSpawnedFresh(working_dir, loop_opt);
     }
 
     fn resetForRespawn(self: *SessionState) void {

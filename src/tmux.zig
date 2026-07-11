@@ -460,10 +460,9 @@ pub fn discardOrphanSession(allocator: std.mem.Allocator, persist_index: usize) 
     _ = child.spawnAndWait() catch return;
 }
 
-/// Destroy the persistent session outright, attached or not. For the CLOSE
-/// path: the user discarded the terminal, so the session (shell, agent and
-/// all) must not linger as a detached resurrection target for later spawns.
-/// Quit never calls this — its sessions stay alive for reattach. Best-effort.
+/// Destroy the persistent session outright, attached or not — the CLOSE path:
+/// a discarded terminal's session must not linger as a resurrection target.
+/// Quit never calls this; its sessions stay alive for reattach. Best-effort.
 pub fn killSession(allocator: std.mem.Allocator, persist_index: usize) void {
     const tmux_path = findOnPath(allocator, "tmux") orelse return;
     defer allocator.free(tmux_path);
@@ -487,7 +486,6 @@ pub fn killSession(allocator: std.mem.Allocator, persist_index: usize) void {
         log.warn("killSession: {s} failed: {}", .{ target, err });
         return;
     };
-    log.info("killed tmux session {s} (terminal closed)", .{target});
 }
 
 /// Whether a persistent session for this index exists on the socket right now.
