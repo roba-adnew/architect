@@ -38,6 +38,26 @@ pub fn hiddenCount(sessions: []const SessionUiInfo) usize {
     return n;
 }
 
+/// True when any hidden terminal is awaiting approval ("needs you"), so the
+/// count pill can adopt the attention border color.
+pub fn hiddenNeedsAttention(sessions: []const SessionUiInfo) bool {
+    for (sessions) |info| {
+        if (info.isHidden() and info.session_status == .awaiting_approval) return true;
+    }
+    return false;
+}
+
+test "hiddenNeedsAttention only flags hidden awaiting_approval sessions" {
+    var sessions = [_]SessionUiInfo{
+        // Visible terminal needing attention must not light the badge.
+        .{ .dead = false, .spawned = true, .hidden = false, .session_status = .awaiting_approval },
+        .{ .dead = false, .spawned = true, .hidden = true },
+    };
+    try std.testing.expect(!hiddenNeedsAttention(&sessions));
+    sessions[1].session_status = .awaiting_approval;
+    try std.testing.expect(hiddenNeedsAttention(&sessions));
+}
+
 pub const UiHost = struct {
     now_ms: i64,
 

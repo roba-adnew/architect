@@ -30,4 +30,5 @@ test {
     _ = @import("ui/components/cwd_bar.zig");
     _ = @import("session/hosting.zig");
     _ = @import("session/notify.zig");
+    _ = @import("ui/types.zig");
 }

@@ -79,7 +79,10 @@ pub const HiddenIndicatorComponent = struct {
             _ = c.SDL_SetRenderDrawColor(renderer, 255, 255, 255, 25);
             primitives.fillRoundedRect(renderer, rect, radius);
         }
-        _ = c.SDL_SetRenderDrawColor(renderer, theme.accent.r, theme.accent.g, theme.accent.b, 255);
+        // Border adopts the "needs you" attention color (same palette slot as the
+        // grid terminal's attention border) when any hidden terminal awaits approval.
+        const border = if (types.hiddenNeedsAttention(host.sessions)) theme.palette[3] else theme.accent;
+        _ = c.SDL_SetRenderDrawColor(renderer, border.r, border.g, border.b, 255);
         primitives.drawRoundedBorder(renderer, rect, radius);
 
         const font_size = dpi.scale(@max(12, @min(20, @divFloor(rect.h, 2))), host.ui_scale);
