@@ -7,7 +7,6 @@ const font_cache = @import("../../font_cache.zig");
 const renderer_mod = @import("../../render/renderer.zig");
 const dpi = @import("../../dpi.zig");
 const input = @import("../../input/mapper.zig");
-const colors = @import("../../colors.zig");
 const metrics = @import("cwd_bar_metrics.zig");
 
 const log = std.log.scoped(.cwd_bar);
@@ -17,8 +16,6 @@ const Rect = geom.Rect;
 const cwd_bar_height = metrics.height;
 const cwd_font_size = metrics.font_size;
 const cwd_padding = metrics.padding;
-const marquee_speed: f32 = 30.0;
-const fade_fade_width: c_int = 20;
 
 pub fn reservedHeight(ui_scale: f32) c_int {
     return metrics.reservedHeight(ui_scale, renderer_mod.grid_border_thickness);
@@ -36,31 +33,13 @@ pub const CwdBarComponent = struct {
 
     const SessionCache = struct {
         basename_tex: ?*c.SDL_Texture = null,
-        parent_tex: ?*c.SDL_Texture = null,
         basename_w: c_int = 0,
         basename_h: c_int = 0,
-        parent_w: c_int = 0,
-        parent_h: c_int = 0,
         cached_path: ?[]const u8 = null,
         font_size: c_int = 0,
 
         fn deinit(self: *SessionCache, allocator: std.mem.Allocator) void {
-            if (self.basename_tex) |tex| {
-                c.SDL_DestroyTexture(tex);
-                self.basename_tex = null;
-            }
-            if (self.parent_tex) |tex| {
-                c.SDL_DestroyTexture(tex);
-                self.parent_tex = null;
-            }
-            if (self.cached_path) |path| {
-                allocator.free(path);
-                self.cached_path = null;
-            }
-            self.basename_w = 0;
-            self.basename_h = 0;
-            self.parent_w = 0;
-            self.parent_h = 0;
+            self.invalidate(allocator);
             self.font_size = 0;
         }
 
@@ -69,18 +48,12 @@ pub const CwdBarComponent = struct {
                 c.SDL_DestroyTexture(tex);
                 self.basename_tex = null;
             }
-            if (self.parent_tex) |tex| {
-                c.SDL_DestroyTexture(tex);
-                self.parent_tex = null;
-            }
             if (self.cached_path) |path| {
                 allocator.free(path);
                 self.cached_path = null;
             }
             self.basename_w = 0;
             self.basename_h = 0;
-            self.parent_w = 0;
-            self.parent_h = 0;
         }
     };
 
@@ -176,7 +149,6 @@ pub const CwdBarComponent = struct {
         const bar_height = dpi.scale(cwd_bar_height, host.ui_scale);
         const border_thickness = dpi.scale(renderer_mod.grid_border_thickness, host.ui_scale);
         const padding = dpi.scale(cwd_padding, host.ui_scale);
-        const fade_width = dpi.scale(fade_fade_width, host.ui_scale);
 
         if (rect.w <= border_thickness * 2 or rect.h <= bar_height + border_thickness) return;
 
@@ -198,7 +170,12 @@ pub const CwdBarComponent = struct {
         };
         _ = c.SDL_RenderFillRect(renderer, &bg_rect);
 
-        const font_px = dpi.scale(cwd_font_size, host.ui_scale);
+        // Match the terminal text: same typeface (shared font paths) at the grid
+        // font's pixel size, clamped so tall fonts still fit inside the bar.
+        const font_px = if (host.grid_font_px > 0)
+            @max(1, @min(host.grid_font_px, bar_height - dpi.scale(4, host.ui_scale)))
+        else
+            dpi.scale(cwd_font_size, host.ui_scale);
         const fonts = cache.get(font_px) catch return;
         const cwd_font = fonts.regular;
 
@@ -270,19 +247,6 @@ pub const CwdBarComponent = struct {
 
         const content_right_edge = bar_rect.x + bar_rect.w - hotkey_width - padding - hotkey_extra_padding - name_width - name_extra_padding;
 
-        var basename_with_slash_buf: [std.fs.max_path_bytes]u8 = undefined;
-        const basename_with_slash = blk: {
-            if (std.mem.eql(u8, cwd_basename, "/")) {
-                break :blk cwd_basename;
-            }
-            if (cwd_basename.len + 1 > basename_with_slash_buf.len) {
-                return;
-            }
-            @memcpy(basename_with_slash_buf[0..cwd_basename.len], cwd_basename);
-            basename_with_slash_buf[cwd_basename.len] = '/';
-            break :blk basename_with_slash_buf[0 .. cwd_basename.len + 1];
-        };
-
         var sc = &self.session_caches[session_idx];
 
         const path_changed = if (sc.cached_path) |cp| !std.mem.eql(u8, cp, cwd_path) else true;
@@ -296,7 +260,7 @@ pub const CwdBarComponent = struct {
                 break :blk null;
             };
 
-            const basename_surface = c.TTF_RenderText_Blended(cwd_font, basename_with_slash.ptr, basename_with_slash.len, text_color) orelse return;
+            const basename_surface = c.TTF_RenderText_Blended(cwd_font, cwd_basename.ptr, cwd_basename.len, text_color) orelse return;
             defer c.SDL_DestroySurface(basename_surface);
 
             const basename_texture = c.SDL_CreateTextureFromSurface(renderer, basename_surface) orelse return;
@@ -319,124 +283,21 @@ pub const CwdBarComponent = struct {
         const basename_x = content_right_edge - basename_width;
         const text_y = bar_rect.y + @divFloor(bar_rect.h - text_height, 2);
 
+        // Clip in case a long folder name at a large font outruns the bar.
+        const clip_rect = c.SDL_Rect{
+            .x = bar_rect.x + padding,
+            .y = bar_rect.y,
+            .w = @max(0, bar_rect.w - padding * 2),
+            .h = bar_rect.h,
+        };
+        _ = c.SDL_SetRenderClipRect(renderer, &clip_rect);
         _ = c.SDL_RenderTexture(renderer, basename_texture, null, &c.SDL_FRect{
             .x = @floatFromInt(basename_x),
             .y = @floatFromInt(text_y),
             .w = basename_width_f,
             .h = basename_height_f,
         });
-
-        var parent_path_buf: [std.fs.max_path_bytes + 1]u8 = undefined;
-        const parent_path = blk: {
-            if (cwd_path.len <= cwd_basename.len) return;
-
-            const parent_without_slash = cwd_path[0 .. cwd_path.len - cwd_basename.len];
-            if (parent_without_slash.len == 0) return;
-
-            if (parent_without_slash[parent_without_slash.len - 1] == '/') {
-                break :blk parent_without_slash;
-            } else {
-                if (parent_without_slash.len + 1 > parent_path_buf.len) {
-                    return;
-                }
-                @memcpy(parent_path_buf[0..parent_without_slash.len], parent_without_slash);
-                parent_path_buf[parent_without_slash.len] = '/';
-                break :blk parent_path_buf[0 .. parent_without_slash.len + 1];
-            }
-        };
-
-        if (path_changed or font_changed or sc.parent_tex == null) {
-            if (sc.parent_tex) |tex| {
-                c.SDL_DestroyTexture(tex);
-                sc.parent_tex = null;
-            }
-            sc.parent_w = 0;
-            sc.parent_h = 0;
-
-            const parent_surface = c.TTF_RenderText_Blended(cwd_font, parent_path.ptr, parent_path.len, text_color) orelse return;
-            defer c.SDL_DestroySurface(parent_surface);
-
-            const parent_texture = c.SDL_CreateTextureFromSurface(renderer, parent_surface) orelse return;
-
-            var parent_width_f: f32 = 0;
-            var parent_height_f: f32 = 0;
-            _ = c.SDL_GetTextureSize(parent_texture, &parent_width_f, &parent_height_f);
-
-            sc.parent_tex = parent_texture;
-            sc.parent_w = @intFromFloat(parent_width_f);
-            sc.parent_h = @intFromFloat(parent_height_f);
-        }
-
-        const parent_texture = sc.parent_tex orelse return;
-        const parent_width: c_int = sc.parent_w;
-        const parent_height: c_int = sc.parent_h;
-        const parent_width_f: f32 = @floatFromInt(parent_width);
-        const parent_height_f: f32 = @floatFromInt(parent_height);
-
-        const available_width = basename_x - bar_rect.x - padding;
-        if (available_width <= 0) return;
-
-        if (parent_width <= available_width) {
-            const parent_x = basename_x - parent_width;
-            _ = c.SDL_RenderTexture(renderer, parent_texture, null, &c.SDL_FRect{
-                .x = @floatFromInt(parent_x),
-                .y = @floatFromInt(text_y),
-                .w = parent_width_f,
-                .h = parent_height_f,
-            });
-        } else {
-            const clip_rect = c.SDL_Rect{
-                .x = bar_rect.x + padding,
-                .y = bar_rect.y,
-                .w = available_width,
-                .h = bar_rect.h,
-            };
-            _ = c.SDL_SetRenderClipRect(renderer, &clip_rect);
-
-            const scroll_range = parent_width - available_width;
-            const scroll_range_f: f32 = @floatFromInt(scroll_range);
-            const idle_ms: f32 = 1000.0;
-            const scroll_ms: f32 = scroll_range_f / marquee_speed * 1000.0;
-            const cycle_ms: f32 = idle_ms * 2.0 + scroll_ms;
-            const cycle_ms_i64: i64 = @max(1, @as(i64, @intFromFloat(std.math.ceil(cycle_ms))));
-            const elapsed_ms: f32 = @floatFromInt(@mod(host.now_ms, cycle_ms_i64));
-
-            const scroll_offset: c_int = calc_scroll: {
-                if (elapsed_ms < idle_ms) break :calc_scroll 0;
-                if (elapsed_ms < idle_ms + scroll_ms) {
-                    const progress = (elapsed_ms - idle_ms) / scroll_ms;
-                    break :calc_scroll @intFromFloat(progress * scroll_range_f);
-                }
-                break :calc_scroll scroll_range;
-            };
-
-            const parent_x = basename_x - parent_width + scroll_offset;
-            _ = c.SDL_RenderTexture(renderer, parent_texture, null, &c.SDL_FRect{
-                .x = @floatFromInt(parent_x),
-                .y = @floatFromInt(text_y),
-                .w = parent_width_f,
-                .h = parent_height_f,
-            });
-
-            _ = c.SDL_SetRenderClipRect(renderer, null);
-
-            const fade_left = scroll_offset < scroll_range;
-            const fade_right = scroll_offset > 0;
-
-            if (fade_left) {
-                renderFadeGradient(renderer, bar_rect, true, fade_width, padding, host.theme);
-            }
-            if (fade_right) {
-                const visible_end_x = bar_rect.x + padding + available_width;
-                const fade_rect = Rect{
-                    .x = bar_rect.x,
-                    .y = bar_rect.y,
-                    .w = visible_end_x - bar_rect.x,
-                    .h = bar_rect.h,
-                };
-                renderFadeGradient(renderer, fade_rect, false, fade_width, padding, host.theme);
-            }
-        }
+        _ = c.SDL_SetRenderClipRect(renderer, null);
     }
 
     fn deinitComp(self_ptr: *anyopaque, renderer: *c.SDL_Renderer) void {
@@ -468,44 +329,4 @@ test "clampUtf8 truncates on a codepoint boundary" {
     // "é" is 2 bytes (0xC3 0xA9); a 3-byte cap must not split the 2nd "é".
     var small: [3]u8 = undefined;
     try std.testing.expectEqualStrings("é", clampUtf8("éé", &small)); // 4 bytes -> keep first é (2 bytes)
-}
-
-fn renderFadeGradient(renderer: *c.SDL_Renderer, bar_rect: Rect, is_left: bool, fade_width: c_int, padding: c_int, theme: *const colors.Theme) void {
-    const sel = theme.selection;
-    const base_color = c.SDL_FColor{
-        .r = @as(f32, @floatFromInt(sel.r)) / 255.0,
-        .g = @as(f32, @floatFromInt(sel.g)) / 255.0,
-        .b = @as(f32, @floatFromInt(sel.b)) / 255.0,
-        .a = 230.0 / 255.0,
-    };
-    const transparent = c.SDL_FColor{ .r = base_color.r, .g = base_color.g, .b = base_color.b, .a = 0.0 };
-
-    const y1: f32 = @floatFromInt(bar_rect.y);
-    const y2: f32 = @floatFromInt(bar_rect.y + bar_rect.h);
-
-    if (is_left) {
-        const x_start: f32 = @floatFromInt(bar_rect.x + padding);
-        const x_end: f32 = @floatFromInt(bar_rect.x + padding + fade_width);
-
-        const verts = [_]c.SDL_Vertex{
-            .{ .position = .{ .x = x_start, .y = y1 }, .color = base_color },
-            .{ .position = .{ .x = x_end, .y = y1 }, .color = transparent },
-            .{ .position = .{ .x = x_start, .y = y2 }, .color = base_color },
-            .{ .position = .{ .x = x_end, .y = y2 }, .color = transparent },
-        };
-        const indices = [_]c_int{ 0, 1, 2, 1, 3, 2 };
-        _ = c.SDL_RenderGeometry(renderer, null, &verts, verts.len, &indices, indices.len);
-    } else {
-        const x_start: f32 = @floatFromInt(bar_rect.x + bar_rect.w - fade_width);
-        const x_end: f32 = @floatFromInt(bar_rect.x + bar_rect.w);
-
-        const verts = [_]c.SDL_Vertex{
-            .{ .position = .{ .x = x_start, .y = y1 }, .color = transparent },
-            .{ .position = .{ .x = x_end, .y = y1 }, .color = base_color },
-            .{ .position = .{ .x = x_start, .y = y2 }, .color = transparent },
-            .{ .position = .{ .x = x_end, .y = y2 }, .color = base_color },
-        };
-        const indices = [_]c_int{ 0, 1, 2, 1, 3, 2 };
-        _ = c.SDL_RenderGeometry(renderer, null, &verts, verts.len, &indices, indices.len);
-    }
 }
