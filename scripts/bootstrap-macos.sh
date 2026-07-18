@@ -24,11 +24,31 @@ if [[ "${1:-}" == "--pack-sdk" ]]; then
     exit 0
 fi
 
-# --- 1. Xcode Command Line Tools ---------------------------------------------
+# --- 1. Full Xcode (not just CLT) --------------------------------------------
+# ghostty's build constructs its iOS xcframework graph on any macOS build, so it
+# needs the iPhoneOS SDK — which ONLY ships with full Xcode.app, never with the
+# Command Line Tools. Check the SDK directly; `xcode-select -p` passes on CLT.
 if ! xcode-select -p >/dev/null 2>&1; then
     say "Installing Xcode Command Line Tools (finish the GUI prompt, then re-run)"
     xcode-select --install || true
     exit 1
+fi
+if ! xcrun --sdk iphoneos --show-sdk-path >/dev/null 2>&1; then
+    # Repoint at Xcode.app if it's installed but xcode-select still targets CLT.
+    if [[ -d /Applications/Xcode.app ]]; then
+        say "Pointing xcode-select at Xcode.app (needs sudo)"
+        sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+        sudo xcodebuild -license accept
+    else
+        say "MISSING: full Xcode.app (no iPhoneOS SDK)"
+        cat >&2 <<'EOF'
+The ghostty dependency needs the iOS SDK, which only comes with full Xcode.app
+(the Command Line Tools are not enough). Install Xcode from the App Store
+(search "Xcode", ~15GB), then re-run this script:
+    https://apps.apple.com/app/xcode/id497799835
+EOF
+        exit 1
+    fi
 fi
 
 # --- 2. Homebrew + libs ------------------------------------------------------
