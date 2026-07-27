@@ -124,7 +124,9 @@ Source builds install both executables under `zig-out/bin/`: `architect` and `ar
 
 ## Hooks
 
-To add hooks for Claude Code, Codex or Gemini, use the `architect` command available in the terminal:
+Architect **auto-installs Claude Code's hooks on startup** (idempotent) — including the `SessionStart` hook that captures each agent's resume id live, so a conversation can be restored after a full machine reboot rather than coming back as a bare shell. You don't need to run anything for Claude.
+
+To (re-)install hooks manually, or to add Codex/Gemini hooks, use the `architect` command available in the terminal:
 ```bash
 architect hook claude
 architect hook codex

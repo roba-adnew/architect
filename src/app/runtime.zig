@@ -38,6 +38,7 @@ const metrics_mod = @import("../metrics.zig");
 const open_url = @import("../os/open.zig");
 const terminal_history = @import("terminal_history.zig");
 const tmux = @import("../tmux.zig");
+const shell = @import("../shell.zig");
 
 const log = std.log.scoped(.runtime);
 extern "c" fn tcgetpgrp(fd: posix.fd_t) posix.pid_t;
@@ -1622,6 +1623,12 @@ pub fn run() !void {
     // Heal a server left poisoned by an older build (stale global resume cmd)
     // before any session spawns or reattaches this run.
     tmux.scrubStaleGlobalEnv(allocator);
+    // Ensure Claude's hooks (incl. the SessionStart id-capture hook) are installed
+    // so a running agent's resume id is written to persistence.toml WHILE it runs.
+    // That live capture is the only way a conversation survives a full device
+    // reboot, which SIGKILLs the process with no chance to scrape the id at quit.
+    // Runs before the restore spawns below, so this run's agents get the hook too.
+    shell.ensureClaudeHookInstalled(allocator);
 
     // Seed the live grid font scale: a persisted value (from a previous
     // Cmd+Opt +/- adjustment) wins over the static [font]/[grid] config; then
@@ -3092,6 +3099,7 @@ pub fn run() !void {
         var notifications = notify_queue.drainAll();
         defer notifications.deinit(allocator);
         const had_notifications = notifications.items.len > 0;
+        var captured_agent_session_id = false;
         for (notifications.items) |note| {
             switch (note) {
                 .status => |s| {
@@ -3141,9 +3149,25 @@ pub fn run() !void {
                     session.agent_session_id = id_dupe;
                     session.agent_metadata_captured = true;
                     persistence_dirty = true;
+                    captured_agent_session_id = true;
                     log.info("captured agent session: slot {d} {s} {s}", .{ session_idx, s.agent, s.session_id });
                 },
             }
+        }
+
+        // A SessionStart hook just delivered a fresh resume id this frame — but
+        // AFTER the earlier entry-sync/save (which read the sessions before the id
+        // landed). Re-sync so the entry carries the new id, then flush now instead
+        // of a frame later, closing the window where a reboot could lose an id we
+        // already hold in memory.
+        if (captured_agent_session_id) {
+            if (syncPersistenceTerminalEntriesFromSessions(&persistence, sessions, allocator) catch |err| blk: {
+                log.warn("failed to re-sync terminal persistence after agent-session capture: {}", .{err});
+                break :blk false;
+            }) {
+                persistence_dirty = true;
+            }
+            savePersistenceIfDirty(&persistence, allocator, &persistence_dirty);
         }
 
         if (pending_comment_send) |pcs| {

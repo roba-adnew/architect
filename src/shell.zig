@@ -32,6 +32,7 @@ var architect_command_setup_done: bool = false;
 var architect_command_dir_buf: [std.fs.max_path_bytes]u8 = undefined;
 var architect_command_path_buf: [std.fs.max_path_bytes]u8 = undefined;
 var architect_command_dir_z: ?[:0]const u8 = null;
+var architect_command_path_z: ?[:0]const u8 = null;
 var architect_zsh_profile_setup_done: bool = false;
 var architect_zsh_profile_ready: bool = false;
 
@@ -243,6 +244,9 @@ const architect_command_script =
     \\        return None
     \\
     \\def write_text(path: str, text: str) -> None:
+    \\    parent = os.path.dirname(path)
+    \\    if parent:
+    \\        os.makedirs(parent, exist_ok=True)
     \\    with open(path, "w", encoding="utf-8") as handle:
     \\        handle.write(text)
     \\
@@ -474,8 +478,14 @@ const architect_command_script =
     \\    path = os.path.expanduser("~/.claude/settings.json")
     \\    data = load_json(path)
     \\    if data is None:
-    \\        print(f"Failed to read {path}", file=sys.stderr)
-    \\        return 1
+    \\        # load_json returns None for a MISSING file and a MALFORMED one alike.
+    \\        # A missing file is fine (fresh machine) — start from an empty config so
+    \\        # the hook can still be installed. A malformed file must not be
+    \\        # clobbered, so bail only when the file actually exists.
+    \\        if os.path.exists(path):
+    \\            print(f"Failed to read {path}", file=sys.stderr)
+    \\            return 1
+    \\        data = {}
     \\    if ensure_claude_hooks(data):
     \\        backup = backup_file(path)
     \\        if backup:
@@ -932,7 +942,43 @@ fn ensureArchitectCommandSetup() void {
         log.warn("failed to chmod architect command: {}", .{err});
     };
 
+    architect_command_path_z = script_path_z;
     architect_command_dir_z = bin_dir_z;
+}
+
+/// Best-effort: install Claude's hooks (Stop/Notification for attention, and
+/// SessionStart for LIVE resume-id capture) into ~/.claude/settings.json by
+/// running the materialized `architect hook claude` helper. This is what writes
+/// a running agent's resume id into persistence.toml *while it runs* — the only
+/// window a full device reboot leaves, since a reboot SIGKILLs the process with
+/// no chance to scrape the id at shutdown. Without the hook, resume-on-reboot
+/// silently does nothing and terminals return as bare shells.
+///
+/// Idempotent: the installer is a no-op when the hooks already exist. Call once
+/// at startup, BEFORE agents spawn, so this run's agents also get the hook.
+/// Never fails the launch — on any error it warns and returns; the user can
+/// still install manually with `architect hook claude`.
+pub fn ensureClaudeHookInstalled(allocator: std.mem.Allocator) void {
+    ensureArchitectCommandSetup();
+    const script_path = architect_command_path_z orelse {
+        log.warn("skipping Claude hook auto-install: architect command helper unavailable", .{});
+        return;
+    };
+
+    var child = std.process.Child.init(&[_][]const u8{ script_path, "hook", "claude" }, allocator);
+    child.stdin_behavior = .Ignore;
+    child.stdout_behavior = .Ignore;
+    child.stderr_behavior = .Ignore;
+    const term = child.spawnAndWait() catch |err| {
+        log.warn("Claude hook auto-install could not run ({}); resume-across-reboot may be unavailable until you run `architect hook claude`", .{err});
+        return;
+    };
+    switch (term) {
+        .Exited => |code| if (code != 0) {
+            log.warn("Claude hook auto-install exited {d}; resume-across-reboot may be unavailable until you run `architect hook claude`", .{code});
+        },
+        else => log.warn("Claude hook auto-install terminated abnormally; resume-across-reboot may be unavailable", .{}),
+    }
 }
 
 fn isShellNamed(shell_path: []const u8, name: []const u8) bool {
