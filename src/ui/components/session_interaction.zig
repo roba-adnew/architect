@@ -201,6 +201,28 @@ pub const SessionInteractionComponent = struct {
                     const clicked_session: usize = grid_row_idx * host.grid_cols + grid_col_idx;
                     if (clicked_session >= self.sessions.len) return false;
 
+                    // Cmd+Left-click opens the link under the cursor (OSC 8 or
+                    // detected URL/path), same as full view. Checked before the
+                    // focus/select logic so a Cmd-click on a link opens it instead
+                    // of focusing the pane. Falls through to normal handling when
+                    // there's no link under the cursor.
+                    if (event.button.button == c.SDL_BUTTON_LEFT and event.button.clicks == 1 and
+                        (c.SDL_GetModState() & c.SDL_KMOD_GUI) != 0)
+                    {
+                        if (gridViewHitFromMouse(self.sessions, self.views, host, mouse_x, mouse_y)) |hit| {
+                            const session = self.sessions[hit.idx];
+                            if (session.terminal) |*terminal| {
+                                if (getLinkAtPin(self.allocator, terminal, hit.pin, self.views[hit.idx].is_viewing_scrollback, session.cwd_path)) |uri| {
+                                    defer self.allocator.free(uri);
+                                    open_url.openTarget(self.allocator, uri) catch |err| {
+                                        log.err("failed to open link: {}", .{err});
+                                    };
+                                    return true;
+                                }
+                            }
+                        }
+                    }
+
                     // Single click on a different pane moves the focus/selection
                     // highlight (no zoom, no spawn); double-click focuses (zooms)
                     // the pane. A single click on the already-focused pane is a
@@ -501,6 +523,38 @@ pub const SessionInteractionComponent = struct {
                                 view.clearHover();
                                 focused.markDirty();
                             }
+                        }
+                    }
+                }
+
+                // Grid-view Cmd+hover: underline the link under the cursor and show
+                // the pointer cursor, matching full view. The hovered pane can be any
+                // tile, so clear any stale hover on the other panes first.
+                if (!dragging_scrollbar and host.view_mode == .Grid and !host.mouse_over_ui) {
+                    const cmd_held = (c.SDL_GetModState() & c.SDL_KMOD_GUI) != 0;
+                    var hovered_idx: ?usize = null;
+                    if (cmd_held) {
+                        if (gridViewHitFromMouse(self.sessions, self.views, host, mouse_x, mouse_y)) |hit| {
+                            const session = self.sessions[hit.idx];
+                            const view = &self.views[hit.idx];
+                            if (session.terminal) |*terminal| {
+                                if (getLinkMatchAtPin(self.allocator, terminal, hit.pin, view.is_viewing_scrollback, session.cwd_path)) |link_match| {
+                                    desired_cursor = .pointer;
+                                    view.hovered_link_start = link_match.start_pin;
+                                    view.hovered_link_end = link_match.end_pin;
+                                    self.allocator.free(link_match.url);
+                                    session.markDirty();
+                                    hovered_idx = hit.idx;
+                                }
+                            }
+                        }
+                    }
+                    // Clear hover on every pane except the one currently hovered.
+                    for (self.views, 0..) |*view, i| {
+                        if (hovered_idx == i) continue;
+                        if (view.hovered_link_start != null) {
+                            view.clearHover();
+                            self.sessions[i].markDirty();
                         }
                     }
                 }
