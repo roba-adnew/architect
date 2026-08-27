@@ -56,15 +56,15 @@ If the file doesn't exist, Architect creates a commented template on first run (
 
 ```toml
 [font]
-family = "Menlo"     # Font family name (default: Menlo on macOS)
+family = "Menlo"     # Font family name (default: JetBrainsMono if installed, else Menlo)
 size = 14            # Base font size in points (default: 14)
 ```
 
 The font family must be installed on your system. Common choices:
-- `Menlo` (macOS terminal font, default — more body, smoother at low DPI)
+- `JetBrainsMono` (preferred default — tall x-height, sturdy strokes on dark backgrounds; `brew install --cask font-jetbrains-mono`)
+- `Menlo` (macOS terminal font, fallback default — more body, smoother at low DPI)
 - `SFNSMono` (SF Mono — Apple system mono, thinner)
 - `MesloLGS NF` (Nerd Font with icons)
-- `JetBrains Mono`
 - `Fira Code`
 
 ### Grid Configuration
@@ -99,7 +99,7 @@ Note: Runtime window position and size are saved to `persistence.toml` and take 
 [theme]
 mode = "light"          # "light" = Cacha light preset; omit/"dark" = default dark
 background = "#262624"  # Terminal background color
-foreground = "#CDD6E0"  # Default text color
+foreground = "#B5BDC8"  # Default text color
 selection = "#1B2230"   # Selection highlight color
 accent = "#61AFEF"      # Accent color (focused borders, UI elements)
 ```
@@ -122,7 +122,7 @@ mode takes effect on the next launch.
 | Setting | Dark default (`mode` unset) | Light default (`mode = "light"`) | Description |
 |---------|---------|---------|-------------|
 | `background` | `#262624` | `#D6D6D5` | App + terminal background |
-| `foreground` | `#CDD6E0` | `#1A1A1A` | Default text color |
+| `foreground` | `#B5BDC8` | `#1A1A1A` | Default text color |
 | `selection` | `#1B2230` | `#BAC2CA` | Selection highlight |
 | `accent` | `#61AFEF` | `#2563EB` | Focus indicators / UI accent |
 

@@ -12,7 +12,9 @@ pub const Color = struct {
 
     // Cacha dark theme background (#262624) to match the companion app.
     pub const default_background: Color = .{ .r = 38, .g = 38, .b = 36 };
-    pub const default_foreground: Color = .{ .r = 205, .g = 214, .b = 224 };
+    // #B5BDC8: ~8:1 contrast on the dark background (vs ~10:1 for the old
+    // #CDD6E0) to cut light-on-dark glare at low DPI; BrightWhite stays #CDD6E0.
+    pub const default_foreground: Color = .{ .r = 181, .g = 189, .b = 200 };
     pub const default_accent: Color = .{ .r = 97, .g = 175, .b = 239 };
     pub const default_selection: Color = .{ .r = 27, .g = 34, .b = 48 };
 
@@ -1065,7 +1067,7 @@ pub const Config = struct {
             \\
             \\# Font options
             \\# [font]
-            \\# family = "SFNSMono"
+            \\# family = "SFNSMono" # default: JetBrainsMono if installed, else Menlo
             \\# size = 14         # focused-view font size (points)
             \\# grid_scale = 1.0  # grid-view text size multiplier (0.5-3.0)
             \\#                   # Cmd +/- zooms whichever view you're in (grid vs focus);
@@ -1110,7 +1112,7 @@ pub const Config = struct {
             \\#                  # Light palette); omit or "dark" = default dark.
             \\#                  # The keys below override the active preset.
             \\# background = "#262624"
-            \\# foreground = "#CDD6E0"
+            \\# foreground = "#B5BDC8"
             \\# selection = "#1B2230"
             \\# accent = "#61AFEF"
             \\
@@ -1258,9 +1260,9 @@ test "ThemeConfig - default colors" {
     try std.testing.expectEqual(@as(u8, 36), bg.b);
 
     const fg = theme.getForeground();
-    try std.testing.expectEqual(@as(u8, 205), fg.r);
-    try std.testing.expectEqual(@as(u8, 214), fg.g);
-    try std.testing.expectEqual(@as(u8, 224), fg.b);
+    try std.testing.expectEqual(@as(u8, 181), fg.r);
+    try std.testing.expectEqual(@as(u8, 189), fg.g);
+    try std.testing.expectEqual(@as(u8, 200), fg.b);
 }
 
 test "ThemeConfig - custom colors" {

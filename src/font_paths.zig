@@ -22,14 +22,12 @@ pub const FontPaths = struct {
         var paths: FontPaths = undefined;
         paths.allocator = allocator;
 
-        const selected_family = if (font_family) |ff| if (ff.len > 0) ff else default_font_family else default_font_family;
+        const selected_family = if (font_family) |ff| if (ff.len > 0) ff else preferred_font_family else preferred_font_family;
 
         if (findSystemFont(allocator, selected_family, "Regular")) |regular_path| {
             paths.regular = regular_path;
         } else |_| {
-            if (font_family) |requested| {
-                log.warn("Font family '{s}' not found, falling back to {s}", .{ requested, default_font_family });
-            }
+            log.warn("Font family '{s}' not found, falling back to {s}", .{ selected_family, default_font_family });
             paths.regular = try findSystemFont(allocator, default_font_family, "Regular");
         }
 
@@ -102,9 +100,11 @@ pub const FontPaths = struct {
     }
 };
 
-// Menlo (a .ttc with Regular/Bold/Italic faces) over SF Mono: it has more body
-// and is tuned for terminal legibility — closer to the VS Code terminal look,
-// especially at low DPI where SF Mono renders thin. Override via [font] family.
+// JetBrainsMono is preferred when installed (taller x-height, sturdier strokes
+// on dark backgrounds at low DPI), but it isn't a system font, so Menlo (a .ttc
+// with Regular/Bold/Italic faces, more body than SF Mono) remains the guaranteed
+// fallback. Override via [font] family.
+const preferred_font_family = "JetBrainsMono";
 const default_font_family = "Menlo";
 
 fn findSystemFont(allocator: std.mem.Allocator, font_family: []const u8, style: []const u8) ![:0]const u8 {

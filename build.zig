@@ -112,11 +112,19 @@ pub fn build(b: *std.Build) void {
     const run_step = b.step("run", "Run the app");
     run_step.dependOn(&run_cmd.step);
 
+    // -Dtest-filter=<substr> runs only matching tests. Useful because the full
+    // suite currently deadlocks in a process-spawning test (see repo notes).
+    const test_filters: []const []const u8 = if (b.option([]const u8, "test-filter", "Only run tests whose name contains this string")) |f|
+        &.{f}
+    else
+        &.{};
     const exe_unit_tests = b.addTest(.{
         .root_module = exe_mod,
+        .filters = test_filters,
     });
     const mcp_unit_tests = b.addTest(.{
         .root_module = mcp_mod,
+        .filters = test_filters,
     });
     mcp_unit_tests.linkLibC();
 

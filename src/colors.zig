@@ -134,10 +134,10 @@ test "Theme.default" {
     try std.testing.expectEqual(@as(u8, 38), theme.background.g);
     try std.testing.expectEqual(@as(u8, 36), theme.background.b);
 
-    // Foreground should be One Dark bright white
-    try std.testing.expectEqual(@as(u8, 205), theme.foreground.r);
-    try std.testing.expectEqual(@as(u8, 214), theme.foreground.g);
-    try std.testing.expectEqual(@as(u8, 224), theme.foreground.b);
+    // Foreground should be the softened dark-mode default (#B5BDC8)
+    try std.testing.expectEqual(@as(u8, 181), theme.foreground.r);
+    try std.testing.expectEqual(@as(u8, 189), theme.foreground.g);
+    try std.testing.expectEqual(@as(u8, 200), theme.foreground.b);
 
     // Palette[1] should be red
     try std.testing.expectEqual(@as(u8, 224), theme.palette[1].r);
