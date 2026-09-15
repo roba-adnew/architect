@@ -72,6 +72,11 @@ extern "c" fn proc_pidpath(pid: c_int, buffer: [*]u8, buffersize: u32) c_int;
 
 const pending_write_shrink_threshold: usize = 64 * 1024;
 const session_id_buf_len: usize = 32;
+
+/// Monotonic spawn counter backing SessionState.spawn_seq. Never recycled —
+/// unlike persist_index/id, which reuse a closed terminal's struct index and
+/// therefore cannot order terminals by creation time.
+var next_spawn_seq: u64 = 1;
 const synchronized_output_timeout_ms: i64 = 1000;
 const synchronized_output_quiet_ms: i64 = 100;
 const synchronized_output_max_timeout_ms: i64 = 5000;
@@ -97,6 +102,13 @@ pub const SessionState = struct {
     /// cancels copy-mode so the cursor returns to the live prompt. See sendInput.
     scrolled_in_copy_mode: bool = false,
     id: usize,
+    /// Creation-order key for grid ordering (compactSessions sorts visible
+    /// sessions by this). Assigned from a monotonic counter on first spawn,
+    /// kept across in-place restarts (so a restarted terminal holds its grid
+    /// position), and cleared on close so a reused struct gets a fresh seq.
+    /// id/persist_index can't serve this role: they recycle a closed
+    /// terminal's index, so sorting by them scrambled the visible order.
+    spawn_seq: u64 = 0,
     shell: ?shell_mod.Shell,
     terminal: ?ghostty_vt.Terminal,
     stream: ?vt_stream.StreamType,
@@ -239,6 +251,10 @@ pub const SessionState = struct {
         // Bump generation to invalidate any stale callbacks from a previous shell; wrapping is intentional.
         self.process_generation +%= 1;
         self.assignSessionId();
+        if (self.spawn_seq == 0) {
+            self.spawn_seq = next_spawn_seq;
+            next_spawn_seq += 1;
+        }
 
         // tmux-backed persistence (on by default): when tmux is available the
         // shell is wrapped in a detached tmux session so it survives an Architect
@@ -429,6 +445,9 @@ pub const SessionState = struct {
         self.spawned = false;
         self.dead = false;
         self.cwd_settled = false;
+        // Closed for good (restart uses resetForRespawn, not teardown): a later
+        // spawn reusing this struct is a NEW terminal and must sort at the end.
+        self.spawn_seq = 0;
     }
 
     pub const ProcessOutputError = posix.ReadError || posix.WriteError || error{

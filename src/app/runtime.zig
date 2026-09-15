@@ -604,7 +604,7 @@ fn compactSessions(
     // terminal — making ⌘N open beyond the blanks. Pushing them to the end keeps
     // the cells between the visible block and the tail genuinely free.
     // ponytail: two-pointer partition over the non-visible tail; hidden order
-    // doesn't matter since reveal re-sorts by id.
+    // doesn't matter since reveal re-sorts by spawn_seq.
     {
         var lo: usize = write_idx;
         var hi: usize = sessions.len;
@@ -623,13 +623,16 @@ fn compactSessions(
         }
     }
 
-    // Keep visible sessions in creation (id) order so a revealed terminal slides
-    // back to its original slot instead of landing at the end. ponytail: O(n^2)
-    // insertion sort, fine for the handful of grid slots.
+    // Keep visible sessions in creation (spawn_seq) order so a revealed terminal
+    // slides back to its original slot instead of landing at the end. Sorting by
+    // id looked equivalent but id = persist_index, which RECYCLES a closed
+    // terminal's struct index — a later ⌘N could inherit a low id and this sort
+    // would shuffle it into the middle of the grid on the next close/hide.
+    // ponytail: O(n^2) insertion sort, fine for the handful of grid slots.
     var a: usize = 1;
     while (a < write_idx) : (a += 1) {
         var b: usize = a;
-        while (b > 0 and sessions[b - 1].id > sessions[b].id) : (b -= 1) {
+        while (b > 0 and sessions[b - 1].spawn_seq > sessions[b].spawn_seq) : (b -= 1) {
             std.mem.swap(*SessionState, &sessions[b - 1], &sessions[b]);
             std.mem.swap(SessionViewState, &views[b - 1], &views[b]);
             std.mem.swap(renderer_mod.RenderCache.Entry, &render_cache.entries[b - 1], &render_cache.entries[b]);
@@ -4029,9 +4032,10 @@ test "claimPersistIndex swaps identities and never duplicates them" {
 }
 
 test "compactSessions parks hidden sessions at the tail" {
-    // 5 slots: visible(id2), hidden(id0), visible(id1), free, free. After compaction
-    // the visible sessions must pack to the front in id order and the hidden session
-    // must move to the tail, leaving the cells between them free for new terminals.
+    // 5 slots: visible(seq2), hidden(seq0), visible(seq1), free, free. After
+    // compaction the visible sessions must pack to the front in spawn_seq
+    // (creation) order and the hidden session must move to the tail, leaving the
+    // cells between them free for new terminals.
     // persist_index seeds the physical creation order (0..4); it must survive
     // compaction unchanged even though slot_index gets rewritten to the new
     // position. That stability is what keeps each live pane's tmux name pinned.
@@ -4039,26 +4043,31 @@ test "compactSessions parks hidden sessions at the tail" {
     s_v2.spawned = true;
     s_v2.hidden = false;
     s_v2.id = 2;
+    s_v2.spawn_seq = 3;
     s_v2.persist_index = 0;
     var s_h0: SessionState = undefined;
     s_h0.spawned = true;
     s_h0.hidden = true;
     s_h0.id = 0;
+    s_h0.spawn_seq = 1;
     s_h0.persist_index = 1;
     var s_v1: SessionState = undefined;
     s_v1.spawned = true;
     s_v1.hidden = false;
     s_v1.id = 1;
+    s_v1.spawn_seq = 2;
     s_v1.persist_index = 2;
     var s_e3: SessionState = undefined;
     s_e3.spawned = false;
     s_e3.hidden = false;
     s_e3.id = 3;
+    s_e3.spawn_seq = 0;
     s_e3.persist_index = 3;
     var s_e4: SessionState = undefined;
     s_e4.spawned = false;
     s_e4.hidden = false;
     s_e4.id = 4;
+    s_e4.spawn_seq = 0;
     s_e4.persist_index = 4;
     var sessions = [_]*SessionState{ &s_v2, &s_h0, &s_v1, &s_e3, &s_e4 };
 
@@ -4071,7 +4080,7 @@ test "compactSessions parks hidden sessions at the tail" {
 
     compactSessions(&sessions, &views, &render_cache, &anim);
 
-    // Visible sessions packed to the front in id order.
+    // Visible sessions packed to the front in spawn_seq order.
     try std.testing.expect(sessions[0].isVisible());
     try std.testing.expectEqual(@as(usize, 1), sessions[0].id);
     try std.testing.expect(sessions[1].isVisible());
@@ -4092,6 +4101,46 @@ test "compactSessions parks hidden sessions at the tail" {
     try std.testing.expectEqual(@as(usize, 1), sessions[1].slot_index);
     try std.testing.expectEqual(@as(usize, 1), sessions[4].persist_index); // s_h0
     try std.testing.expectEqual(@as(usize, 4), sessions[4].slot_index);
+}
+
+test "compactSessions keeps display order when a recycled id is out of creation order" {
+    // Regression: close terminal #2 → its struct (persist_index 1) parks at the
+    // tail → ⌘N reuses it, inheriting id=1 but a NEW (highest) spawn_seq. The
+    // grid shows it last; the next close must keep it last. Sorting by id put
+    // it in the middle, scrambling the surviving terminals.
+    var s_a: SessionState = undefined;
+    s_a.spawned = true;
+    s_a.hidden = false;
+    s_a.id = 0;
+    s_a.spawn_seq = 1;
+    s_a.persist_index = 0;
+    var s_c: SessionState = undefined;
+    s_c.spawned = true;
+    s_c.hidden = false;
+    s_c.id = 2;
+    s_c.spawn_seq = 3;
+    s_c.persist_index = 2;
+    var s_new: SessionState = undefined; // reused struct: low id, newest spawn
+    s_new.spawned = true;
+    s_new.hidden = false;
+    s_new.id = 1;
+    s_new.spawn_seq = 4;
+    s_new.persist_index = 1;
+    var sessions = [_]*SessionState{ &s_a, &s_c, &s_new };
+
+    var views: [3]SessionViewState = undefined;
+    var render_cache = try renderer_mod.RenderCache.init(std.testing.allocator, 3);
+    defer render_cache.deinit();
+    var anim: AnimationState = undefined;
+    anim.focused_session = 0;
+    anim.previous_session = 0;
+
+    compactSessions(&sessions, &views, &render_cache, &anim);
+
+    try std.testing.expectEqual(@as(u64, 1), sessions[0].spawn_seq); // s_a stays first
+    try std.testing.expectEqual(@as(u64, 3), sessions[1].spawn_seq); // s_c stays second
+    try std.testing.expectEqual(@as(u64, 4), sessions[2].spawn_seq); // newest stays last
+    try std.testing.expectEqual(@as(usize, 1), sessions[2].id); // despite its recycled low id
 }
 
 test "agentLabel reports the detected agent name or 'none'" {
