@@ -290,6 +290,40 @@ session.pending_write buffer
 PTY write() -> shell process stdin
 ```
 
+### Grid Drag-Reorder Path
+
+Press-and-hold a grid tile (220ms, <6px travel) to start a reorder drag;
+moving early demotes the press to the normal text-selection drag. The gesture
+lives in `SessionInteractionComponent` and commits **live**: each time the
+cursor enters the inner half-size center zone of another visible tile, the
+component emits one `UiAction.ReorderGridSessions{from, to}` springboard move
+(no permutation payload, no preview/commit split).
+
+```
+SessionInteractionComponent (hold -> .active, center-zone hysteresis)
+    | UiAction.ReorderGridSessions{from, to}   (one per re-slot, validated live)
+    v
+runtime: springboardOrder() -> applyReorder()
+    |  renumbers order_seq from a fresh mintOrderSeqBlock range,
+    |  then delegates the physical permutation to compactSessions()
+    |  (views/render_cache lockstep + focus remap by id); persistence_dirty
+    v
+GridLayout.startResizeWithDuration(reorder_duration_ms)
+    |  same-dims "resize": tiles slide to their new cells; start rects are
+    |  seeded from the DRAWN mid-flight rects so rapid re-slots retarget
+    |  smoothly; anim_state.mode = .GridResizing until the slide completes
+```
+
+Key invariants: `order_seq` (formerly `spawn_seq`) is the single display-order
+key — a reorder renumbers it and lets `compactSessions` do the moving; nothing
+permutes `sessions`/`views`/`render_cache` directly. A pure permutation keeps
+the uniform grid PTY size, so no terminal resize fires. Persistence needs no
+new field: the entry writer records physical array order, and restore replays
+it. The gesture treats `.Grid` and `.GridResizing` as the same view (every
+committed re-slot flips the mode for its own slide). Escape re-slots the tile
+back to its origin; reveal of a hidden terminal mints a fresh `order_seq` so
+it lands at the end of the grid.
+
 ### External Notification Path
 
 ```

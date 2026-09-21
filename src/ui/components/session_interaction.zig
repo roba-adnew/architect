@@ -4,6 +4,7 @@ const ghostty_vt = @import("ghostty-vt");
 const input = @import("../../input/mapper.zig");
 const open_url = @import("../../os/open.zig");
 const geom = @import("../../geom.zig");
+const primitives = @import("../../gfx/primitives.zig");
 const renderer_mod = @import("../../render/renderer.zig");
 const dpi = @import("../../dpi.zig");
 const session_state = @import("../../session/state.zig");
@@ -17,6 +18,7 @@ const scrollbar = @import("scrollbar.zig");
 const cwd_bar_metrics = @import("cwd_bar_metrics.zig");
 const view_state = @import("../session_view_state.zig");
 const UiComponent = @import("../component.zig").UiComponent;
+const FirstFrameGuard = @import("../first_frame_guard.zig").FirstFrameGuard;
 
 const log = std.log.scoped(.session_interaction);
 
@@ -59,6 +61,9 @@ pub const SessionInteractionComponent = struct {
     /// UiAction.ReorderGridSessions, so no permutation is held here.
     reorder_phase: ReorderPhase = .idle,
     reorder_slot: usize = 0,
+    /// Slot the drag started from; Escape re-slots the tile back here.
+    reorder_origin_slot: usize = 0,
+    reorder_first_frame: FirstFrameGuard = .{},
     reorder_press_x: f32 = 0,
     reorder_press_y: f32 = 0,
     reorder_press_ms: i64 = 0,
@@ -208,17 +213,47 @@ pub const SessionInteractionComponent = struct {
     fn maybePromoteReorder(self: *SessionInteractionComponent, host: *const types.UiHost) void {
         if (host.now_ms - self.reorder_press_ms < reorder_hold_ms) return;
         self.reorder_phase = .active;
+        self.reorder_origin_slot = self.reorder_slot;
         self.deferred_select = null;
         if (self.grid_selection_idx) |idx| {
             if (idx < self.views.len) endSelection(&self.views[idx]);
             self.grid_selection_idx = null;
         }
+        self.reorder_first_frame.markTransition();
+    }
+
+    /// End the reorder gesture (release, Escape, focus loss). Re-slots are
+    /// committed live, so ending is just state cleanup plus one frame to
+    /// erase the lift cue.
+    fn endReorder(self: *SessionInteractionComponent) void {
+        self.reorder_phase = .idle;
+        self.deferred_select = null;
+        self.reorder_first_frame.markTransition();
     }
 
     fn handleEvent(self_ptr: *anyopaque, host: *const types.UiHost, event: *const c.SDL_Event, actions: *types.UiActionQueue) bool {
         const self: *SessionInteractionComponent = @ptrCast(@alignCast(self_ptr));
 
         switch (event.type) {
+            c.SDL_EVENT_KEY_DOWN => {
+                // Escape cancels an active reorder drag: springboard the tile
+                // back to where the drag started (re-slots were committed
+                // live, so the way back is just one more move).
+                if (event.key.key == c.SDLK_ESCAPE and self.reorder_phase == .active) {
+                    if (self.reorder_slot != self.reorder_origin_slot) {
+                        actions.append(.{ .ReorderGridSessions = .{ .from = self.reorder_slot, .to = self.reorder_origin_slot } }) catch |err| {
+                            log.warn("failed to queue reorder cancel {d}->{d}: {}", .{ self.reorder_slot, self.reorder_origin_slot, err });
+                        };
+                    }
+                    self.endReorder();
+                    return true;
+                }
+            },
+            c.SDL_EVENT_WINDOW_FOCUS_LOST => {
+                // The release will land in another app; end the gesture but
+                // let the runtime's own focus-lost handling run too.
+                if (self.reorder_phase != .idle) self.endReorder();
+            },
             c.SDL_EVENT_MOUSE_BUTTON_DOWN => {
                 const mouse_x: c_int = @intFromFloat(event.button.x);
                 const mouse_y: c_int = @intFromFloat(event.button.y);
@@ -459,7 +494,7 @@ pub const SessionInteractionComponent = struct {
                         // The drag owned this press; every re-slot was already
                         // committed live, so release just ends the gesture.
                         .active => {
-                            self.reorder_phase = .idle;
+                            self.endReorder();
                             return true;
                         },
                         // Hold never satisfied: this was a plain click — fire
@@ -610,8 +645,7 @@ pub const SessionInteractionComponent = struct {
                     // GridResizing still counts as grid: every committed
                     // re-slot flips the mode there for its slide animation,
                     // and the drag must keep running through it.
-                    self.reorder_phase = .idle;
-                    self.deferred_select = null;
+                    self.endReorder();
                 }
                 if (!dragging_scrollbar and inGridView(host.view_mode) and self.reorder_phase == .pending) {
                     const dx = event.motion.x - self.reorder_press_x;
@@ -803,6 +837,18 @@ pub const SessionInteractionComponent = struct {
         return false;
     }
 
+    /// Lift cue: while a reorder drag is active, outline the dragged tile's
+    /// current cell with a thicker accent border so it reads as "picked up".
+    fn render(self_ptr: *anyopaque, host: *const types.UiHost, renderer: *c.SDL_Renderer, assets: *types.UiAssets) void {
+        const self: *SessionInteractionComponent = @ptrCast(@alignCast(self_ptr));
+        _ = assets;
+        defer self.reorder_first_frame.markDrawn();
+        if (self.reorder_phase != .active or !inGridView(host.view_mode)) return;
+        const rect = sessionRectForIndex(host, self.reorder_slot) orelse return;
+        const thickness = dpi.scale(renderer_mod.grid_border_thickness + 2, host.ui_scale);
+        primitives.drawThickBorder(renderer, rect, thickness, dpi.scale(6, host.ui_scale), host.theme.accent);
+    }
+
     fn update(self_ptr: *anyopaque, host: *const types.UiHost, _: *types.UiActionQueue) void {
         const self: *SessionInteractionComponent = @ptrCast(@alignCast(self_ptr));
         if (self.last_update_ms == 0) {
@@ -844,8 +890,10 @@ pub const SessionInteractionComponent = struct {
     fn wantsFrame(self_ptr: *anyopaque, host: *const types.UiHost) bool {
         const self: *SessionInteractionComponent = @ptrCast(@alignCast(self_ptr));
         // A pending hold must keep update() ticking so a motionless press can
-        // cross the time threshold even under idle throttling.
+        // cross the time threshold even under idle throttling; the guard buys
+        // one more frame after the gesture ends to erase the lift cue.
         if (self.reorder_phase != .idle) return true;
+        if (self.reorder_first_frame.wantsFrame()) return true;
         for (self.views) |view| {
             if (view.scroll_velocity != 0.0) return true;
             if (view.wave_start_time > 0 and (host.now_ms - view.wave_start_time) < wave_total_ms) return true;
@@ -995,7 +1043,7 @@ pub const SessionInteractionComponent = struct {
     const vtable = UiComponent.VTable{
         .handleEvent = handleEvent,
         .update = update,
-        .render = null,
+        .render = render,
         .hitTest = hitTest,
         .deinit = deinitComp,
         .wantsFrame = wantsFrame,

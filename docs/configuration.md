@@ -339,7 +339,7 @@ y = 50
 |-------|-------------|
 | `font_size` | Current font size (adjusted with `Cmd++`/`Cmd+-`) |
 | `persist_epoch` | Random per-install token (16 hex chars) minted on first launch and mixed into tmux session names (`architect-<epoch>-<n>`) so this install never reattaches to another install's — or an old fossil's — session on the shared socket. Do not edit; deleting it just mints a fresh one (and abandons the current run's live tmux sessions). |
-| `terminals` | Working directories for each terminal (ordered by session index) |
+| `terminals` | Working directories for each terminal. Array position is the grid display order — creation order until you drag-reorder tiles, after which the user's arrangement is what round-trips across restarts. |
 | `terminal_agent_types` | Agent type for each terminal slot (`"claude"`, `"codex"`, `"gemini"`), or an empty string (`""`) when absent. Present only when at least one terminal had a running agent at quit time. |
 | `terminal_session_ids` | Session UUID for each terminal slot, or an empty string (`""`) when absent. Written alongside `terminal_agent_types` when an agent session ID was captured at quit. On next launch, Architect writes the corresponding resume command (e.g., `claude --resume <uuid>`) to the terminal as soon as the shell is ready. |
 | `terminal_persist_indices` | Each terminal's tmux identity (`architect-<epoch>-<index>`), so a restored terminal reattaches to its own live session instead of one derived from its grid position. `-1` = unknown. Absent in older files: terminals then reattach by position, and same-epoch graveyard sessions are spared for that one launch. |
