@@ -604,7 +604,7 @@ fn compactSessions(
     // terminal — making ⌘N open beyond the blanks. Pushing them to the end keeps
     // the cells between the visible block and the tail genuinely free.
     // ponytail: two-pointer partition over the non-visible tail; hidden order
-    // doesn't matter since reveal re-sorts by order_seq.
+    // doesn't matter since reveal mints a fresh order_seq (lands at the end).
     {
         var lo: usize = write_idx;
         var hi: usize = sessions.len;
@@ -3342,6 +3342,10 @@ pub fn run() !void {
                 if (!(sessions[idx].spawned and sessions[idx].hidden)) continue;
                 const reveal_id = sessions[idx].id;
                 sessions[idx].hidden = false;
+                // Reveal is a fresh appearance: mint a new order_seq so the
+                // terminal lands at the END of the grid instead of re-sorting
+                // by its old seq into the middle of a hand-arranged order.
+                sessions[idx].order_seq = session_state.mintOrderSeqBlock(1);
                 sessions[idx].markDirty();
                 compactSessions(sessions, session_interaction_component.viewSlice(), &render_cache, &anim_state);
                 const new_dims = GridLayout.calculateDimensions(countVisibleSessions(sessions));
@@ -4707,4 +4711,65 @@ test "syncPersistenceTerminalEntriesFromSessions reacts to cd, spawn, and despaw
     try std.testing.expectEqualStrings("codex", persistence.terminal_entries.items[0].agent_type.?);
     try std.testing.expectEqualStrings("sid-42", persistence.terminal_entries.items[0].agent_session_id.?);
     try std.testing.expect(!(try syncPersistenceTerminalEntriesFromSessions(&persistence, &sessions, allocator)));
+}
+
+test "reordered arrangement round-trips through persistence entries" {
+    const allocator = std.testing.allocator;
+
+    // Live grid [/a, /b, /c]; user drags slot 2 to slot 0 → [/c, /a, /b].
+    var s0: SessionState = undefined;
+    var s1: SessionState = undefined;
+    var s2: SessionState = undefined;
+    testSession(&s0, 0, 1, true, false);
+    testSession(&s1, 1, 2, true, false);
+    testSession(&s2, 2, 3, true, false);
+    const paths = [_][]const u8{ "/a", "/b", "/c" };
+    var sessions = [_]*SessionState{ &s0, &s1, &s2 };
+    for (sessions, 0..) |s, i| {
+        s.cwd_path = paths[i];
+        s.agent_kind = null;
+        s.agent_session_id = null;
+        s.agent_metadata_captured = false;
+    }
+
+    var views: [3]SessionViewState = undefined;
+    var render_cache = try renderer_mod.RenderCache.init(allocator, 3);
+    defer render_cache.deinit();
+    var anim: AnimationState = undefined;
+    anim.focused_session = 0;
+    anim.previous_session = 0;
+
+    const order = [_]usize{ 2, 0, 1 };
+    try std.testing.expect(applyReorder(&sessions, &views, &render_cache, &anim, &order));
+
+    // The writer walks physical array order, so the file records the user's
+    // arrangement — no dedicated order field needed.
+    var persistence = config_mod.Persistence.init(allocator);
+    defer persistence.deinit(allocator);
+    _ = try syncPersistenceTerminalEntriesFromSessions(&persistence, &sessions, allocator);
+    try std.testing.expectEqual(@as(usize, 3), persistence.terminal_entries.items.len);
+    try std.testing.expectEqualStrings("/c", persistence.terminal_entries.items[0].path);
+    try std.testing.expectEqualStrings("/a", persistence.terminal_entries.items[1].path);
+    try std.testing.expectEqualStrings("/b", persistence.terminal_entries.items[2].path);
+
+    // Restore spawns entries in file position, minting order_seq per spawn the
+    // way ensureSpawnedWithDir does (order_seq == 0 → next counter value), so
+    // compaction reproduces the saved arrangement.
+    var r0: SessionState = undefined;
+    var r1: SessionState = undefined;
+    var r2: SessionState = undefined;
+    const restored_arr = [_]*SessionState{ &r0, &r1, &r2 };
+    for (restored_arr, 0..) |r, i| {
+        testSession(r, i, 0, true, false);
+        r.order_seq = session_state.mintOrderSeqBlock(1);
+        r.cwd_path = persistence.terminal_entries.items[i].path;
+    }
+    var restored = restored_arr;
+    var restored_views: [3]SessionViewState = undefined;
+    var restored_cache = try renderer_mod.RenderCache.init(allocator, 3);
+    defer restored_cache.deinit();
+    compactSessions(&restored, &restored_views, &restored_cache, &anim);
+    try std.testing.expectEqualStrings("/c", restored[0].cwd_path.?);
+    try std.testing.expectEqualStrings("/a", restored[1].cwd_path.?);
+    try std.testing.expectEqualStrings("/b", restored[2].cwd_path.?);
 }
