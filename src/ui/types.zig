@@ -116,11 +116,21 @@ pub const UiAction = union(enum) {
     RemoveWorktree: RemoveWorktreeAction,
     ChangeDirectory: ChangeDirAction,
     DespawnSession: usize,
+    /// Springboard move committed live during a hold-drag reorder: the tile at
+    /// visible slot `from` moves to slot `to`, tiles between shift by one.
+    /// Emitted per re-slot (not once at release), so each move is validated
+    /// against the live visible set and there is no stale permutation to hold.
+    ReorderGridSessions: ReorderMove,
     ToggleMetrics: void,
     ToggleDiffOverlay: void,
     ToggleReaderOverlay: void,
     SendDiffComments: SendDiffCommentsAction,
     OpenStory: OpenStoryAction,
+};
+
+pub const ReorderMove = struct {
+    from: usize,
+    to: usize,
 };
 
 pub const SwitchWorktreeAction = struct {

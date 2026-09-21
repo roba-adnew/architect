@@ -664,6 +664,23 @@ fn compactSessions(
 /// the next spawn keep sorting correctly with no values reused. Returns false
 /// on a stale/invalid permutation (e.g. a terminal died mid-drag) and changes
 /// nothing.
+/// Build the springboard permutation for moving visible slot `from` to `to`:
+/// the dragged tile lands at `to`, tiles between the two shift one slot
+/// toward `from`, everything outside that range stays put. Returns
+/// order[i] = current index of the session that should occupy slot i.
+fn springboardOrder(buf: []usize, visible: usize, from: usize, to: usize) []usize {
+    var w: usize = 0;
+    var i: usize = 0;
+    while (i < visible) : (i += 1) {
+        if (i == from) continue;
+        if (w == to) w += 1; // hole for the dragged tile
+        buf[w] = i;
+        w += 1;
+    }
+    buf[to] = from;
+    return buf[0..visible];
+}
+
 fn applyReorder(
     sessions: []*SessionState,
     views: []SessionViewState,
@@ -3337,6 +3354,21 @@ pub fn run() !void {
                 session_interaction_component.setAttention(idx, false, now);
                 anim_state.focused_session = idx;
             },
+            .ReorderGridSessions => |move| {
+                const visible = countVisibleSessions(sessions);
+                if (move.from >= visible or move.to >= visible or move.from == move.to) continue;
+                var order_buf: [grid_layout.max_terminals]usize = undefined;
+                const order = springboardOrder(&order_buf, visible, move.from, move.to);
+                if (applyReorder(sessions, session_interaction_component.viewSlice(), &render_cache, &anim_state, order)) {
+                    // Tiles changed cells; repaint every visible pane. PTY
+                    // sizes are untouched — a pure permutation keeps the
+                    // uniform grid winsize, so no resize fires.
+                    for (sessions) |session| {
+                        if (session.isVisible()) session.markDirty();
+                    }
+                    persistence_dirty = true;
+                }
+            },
             .RevealHiddenTerminal => |idx| {
                 if (idx >= sessions.len) continue;
                 if (!(sessions[idx].spawned and sessions[idx].hidden)) continue;
@@ -4205,6 +4237,15 @@ fn testSession(s: *SessionState, id: usize, order_seq: u64, spawned: bool, hidde
     s.id = id;
     s.order_seq = order_seq;
     s.persist_index = id;
+}
+
+test "springboardOrder shifts only the tiles between from and to" {
+    var buf: [8]usize = undefined;
+    try std.testing.expectEqualSlices(usize, &.{ 1, 2, 0, 3 }, springboardOrder(&buf, 4, 0, 2));
+    try std.testing.expectEqualSlices(usize, &.{ 2, 0, 1, 3 }, springboardOrder(&buf, 4, 2, 0));
+    try std.testing.expectEqualSlices(usize, &.{ 0, 2, 3, 1 }, springboardOrder(&buf, 4, 1, 3));
+    // Adjacent swap: exactly two tiles trade places.
+    try std.testing.expectEqualSlices(usize, &.{ 1, 0, 2, 3 }, springboardOrder(&buf, 4, 0, 1));
 }
 
 test "applyReorder commits a springboard move and focus follows its session" {

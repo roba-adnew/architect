@@ -34,6 +34,13 @@ pub const wave_strip_height: i64 = 8;
 
 const CursorKind = enum { arrow, ibeam, pointer };
 
+/// Click-hold-drag tile reorder (grid view): a plain press becomes a drag
+/// after `reorder_hold_ms` without traveling more than `reorder_drag_slop_px`;
+/// traveling early demotes the press to the normal text-selection drag.
+pub const reorder_hold_ms: i64 = 220;
+pub const reorder_drag_slop_px: f32 = 6.0;
+const ReorderPhase = enum { idle, pending, active };
+
 pub const SessionInteractionComponent = struct {
     allocator: std.mem.Allocator,
     sessions: []*SessionState,
@@ -47,6 +54,18 @@ pub const SessionInteractionComponent = struct {
     /// Grid-view text selection: the pane index a drag-select started in, so motion
     /// and release stay bound to that pane. Null when not selecting in grid view.
     grid_selection_idx: ?usize = null,
+    /// Hold-to-reorder drag state. `reorder_slot` is the slot the dragged tile
+    /// currently occupies — each re-slot is committed live via
+    /// UiAction.ReorderGridSessions, so no permutation is held here.
+    reorder_phase: ReorderPhase = .idle,
+    reorder_slot: usize = 0,
+    reorder_press_x: f32 = 0,
+    reorder_press_y: f32 = 0,
+    reorder_press_ms: i64 = 0,
+    /// A single click's SelectGridSession is deferred to release so a press
+    /// that becomes a hold-drag never flashes a focus change first. Fired on
+    /// release, or immediately when the press demotes into a text selection.
+    deferred_select: ?usize = null,
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -182,6 +201,20 @@ pub const SessionInteractionComponent = struct {
         }
     }
 
+    /// Promote a pending hold to an active reorder drag once the time bar is
+    /// crossed. Disarms the text selection the same press started — the two
+    /// gestures are mutually exclusive from here on — and drops the deferred
+    /// select (a drag is not a click).
+    fn maybePromoteReorder(self: *SessionInteractionComponent, host: *const types.UiHost) void {
+        if (host.now_ms - self.reorder_press_ms < reorder_hold_ms) return;
+        self.reorder_phase = .active;
+        self.deferred_select = null;
+        if (self.grid_selection_idx) |idx| {
+            if (idx < self.views.len) endSelection(&self.views[idx]);
+            self.grid_selection_idx = null;
+        }
+    }
+
     fn handleEvent(self_ptr: *anyopaque, host: *const types.UiHost, event: *const c.SDL_Event, actions: *types.UiActionQueue) bool {
         const self: *SessionInteractionComponent = @ptrCast(@alignCast(self_ptr));
 
@@ -228,10 +261,18 @@ pub const SessionInteractionComponent = struct {
                     // the pane. A single click on the already-focused pane is a
                     // no-op. Uses SDL's native click counter, which respects the
                     // OS double-click speed.
+                    const cmd_held = (c.SDL_GetModState() & c.SDL_KMOD_GUI) != 0;
                     switch (gridClickOutcome(event.button.clicks, clicked_session, host.focused_session, host.grid_cols * host.grid_rows)) {
                         .none => {},
-                        .select => actions.append(.{ .SelectGridSession = clicked_session }) catch |err| {
-                            log.warn("failed to queue select action for session {d}: {}", .{ clicked_session, err });
+                        // Deferred to release for plain left presses: the same
+                        // press may become a hold-drag reorder, and selecting
+                        // first would flash the focus highlight mid-gesture.
+                        .select => if (!cmd_held and event.button.button == c.SDL_BUTTON_LEFT and event.button.clicks == 1) {
+                            self.deferred_select = clicked_session;
+                        } else {
+                            actions.append(.{ .SelectGridSession = clicked_session }) catch |err| {
+                                log.warn("failed to queue select action for session {d}: {}", .{ clicked_session, err });
+                            };
                         },
                         .focus => actions.append(.{ .FocusSession = clicked_session }) catch |err| {
                             log.warn("failed to queue focus action for session {d}: {}", .{ clicked_session, err });
@@ -244,6 +285,16 @@ pub const SessionInteractionComponent = struct {
                         if (gridViewHitFromMouse(self.sessions, self.views, host, mouse_x, mouse_y)) |hit| {
                             beginSelection(self.sessions[hit.idx], &self.views[hit.idx], hit.pin);
                             self.grid_selection_idx = hit.idx;
+                        }
+                        // Arm hold-to-reorder on visible tiles. Cmd presses never
+                        // arm (Cmd is the link-open modifier); double-click zoom
+                        // is excluded by clicks == 1.
+                        if (!cmd_held and clicked_session < visibleCount(self.sessions)) {
+                            self.reorder_phase = .pending;
+                            self.reorder_slot = clicked_session;
+                            self.reorder_press_x = event.button.x;
+                            self.reorder_press_y = event.button.y;
+                            self.reorder_press_ms = host.now_ms;
                         }
                     }
                     return true;
@@ -404,6 +455,26 @@ pub const SessionInteractionComponent = struct {
                 }
 
                 if (host.view_mode == .Grid and event.button.button == c.SDL_BUTTON_LEFT) {
+                    switch (self.reorder_phase) {
+                        // The drag owned this press; every re-slot was already
+                        // committed live, so release just ends the gesture.
+                        .active => {
+                            self.reorder_phase = .idle;
+                            return true;
+                        },
+                        // Hold never satisfied: this was a plain click — fire
+                        // the select that was deferred on press.
+                        .pending => {
+                            self.reorder_phase = .idle;
+                            if (self.deferred_select) |idx| {
+                                self.deferred_select = null;
+                                actions.append(.{ .SelectGridSession = idx }) catch |err| {
+                                    log.warn("failed to queue select action for session {d}: {}", .{ idx, err });
+                                };
+                            }
+                        },
+                        .idle => {},
+                    }
                     if (self.grid_selection_idx) |idx| {
                         const was_dragging = idx < self.views.len and self.views[idx].selection_dragging;
                         if (idx < self.views.len) endSelection(&self.views[idx]);
@@ -525,6 +596,46 @@ pub const SessionInteractionComponent = struct {
                             }
                         }
                     }
+                }
+
+                // Hold-to-reorder. Pending: pointer travel past the slop before
+                // the hold elapses demotes the press to the text-selection drag
+                // below (firing the deferred select the press was holding);
+                // staying put lets update()/this path promote on the time bar.
+                // Active: the drag owns the pointer — re-slot when the cursor
+                // enters the CENTER zone of another tile, and skip hover and
+                // selection handling entirely.
+                if (self.reorder_phase != .idle and host.view_mode != .Grid) {
+                    // View changed mid-press (zoom animation etc.) — abandon.
+                    self.reorder_phase = .idle;
+                    self.deferred_select = null;
+                }
+                if (!dragging_scrollbar and host.view_mode == .Grid and self.reorder_phase == .pending) {
+                    const dx = event.motion.x - self.reorder_press_x;
+                    const dy = event.motion.y - self.reorder_press_y;
+                    if (reorderPressMoved(dx, dy)) {
+                        self.reorder_phase = .idle;
+                        if (self.deferred_select) |idx| {
+                            self.deferred_select = null;
+                            actions.append(.{ .SelectGridSession = idx }) catch |err| {
+                                log.warn("failed to queue select action for session {d}: {}", .{ idx, err });
+                            };
+                        }
+                    } else {
+                        self.maybePromoteReorder(host);
+                    }
+                }
+                if (!dragging_scrollbar and host.view_mode == .Grid and self.reorder_phase == .active) {
+                    if (reorderTargetSlot(mouse_x, mouse_y, host.grid_cols, host.grid_rows, host.cell_w, host.cell_h, visibleCount(self.sessions))) |target| {
+                        if (target != self.reorder_slot) {
+                            actions.append(.{ .ReorderGridSessions = .{ .from = self.reorder_slot, .to = target } }) catch |err| {
+                                log.warn("failed to queue reorder action {d}->{d}: {}", .{ self.reorder_slot, target, err });
+                            };
+                            self.reorder_slot = target;
+                        }
+                    }
+                    self.updateCursor(.arrow);
+                    return true;
                 }
 
                 // Grid-view Cmd+hover: underline the link under the cursor and show
@@ -699,6 +810,12 @@ pub const SessionInteractionComponent = struct {
         self.last_update_ms = host.now_ms;
         if (delta_ms <= 0) return;
 
+        // A motionless hold gets no mouse events; the per-frame tick is what
+        // promotes it to a reorder drag (wantsFrame keeps frames coming).
+        if (self.reorder_phase == .pending and host.view_mode == .Grid) {
+            self.maybePromoteReorder(host);
+        }
+
         const delta_time_s: f32 = @as(f32, @floatFromInt(delta_ms)) / 1000.0;
         for (self.sessions, 0..) |session, idx| {
             const view = &self.views[idx];
@@ -723,6 +840,9 @@ pub const SessionInteractionComponent = struct {
 
     fn wantsFrame(self_ptr: *anyopaque, host: *const types.UiHost) bool {
         const self: *SessionInteractionComponent = @ptrCast(@alignCast(self_ptr));
+        // A pending hold must keep update() ticking so a motionless press can
+        // cross the time threshold even under idle throttling.
+        if (self.reorder_phase != .idle) return true;
         for (self.views) |view| {
             if (view.scroll_velocity != 0.0) return true;
             if (view.wave_start_time > 0 and (host.now_ms - view.wave_start_time) < wave_total_ms) return true;
@@ -1616,6 +1736,47 @@ fn calculateHoveredSession(
     };
 }
 
+fn visibleCount(sessions: []const *SessionState) usize {
+    var n: usize = 0;
+    for (sessions) |s| {
+        if (s.isVisible()) n += 1;
+    }
+    return n;
+}
+
+/// True when the pointer has traveled past the reorder slop — the press is a
+/// text-selection drag, not a hold.
+fn reorderPressMoved(dx: f32, dy: f32) bool {
+    return dx * dx + dy * dy > reorder_drag_slop_px * reorder_drag_slop_px;
+}
+
+/// Slot the dragged tile should re-slot into, or null. Only fires when the
+/// pointer is inside the inner half-size box around a tile's center — entering
+/// the center zone is the trigger, so jitter on a tile boundary can never
+/// flicker tiles back and forth — and only for slots holding a visible tile.
+fn reorderTargetSlot(
+    mouse_x: c_int,
+    mouse_y: c_int,
+    grid_cols: usize,
+    grid_rows: usize,
+    cell_w: c_int,
+    cell_h: c_int,
+    visible_count: usize,
+) ?usize {
+    if (cell_w <= 0 or cell_h <= 0 or grid_cols == 0 or grid_rows == 0) return null;
+    if (mouse_x < 0 or mouse_y < 0) return null;
+    const col: usize = @min(@as(usize, @intCast(@divFloor(mouse_x, cell_w))), grid_cols - 1);
+    const row: usize = @min(@as(usize, @intCast(@divFloor(mouse_y, cell_h))), grid_rows - 1);
+    const slot: usize = row * grid_cols + col;
+    if (slot >= visible_count) return null;
+    // Inner 50% box: within a quarter cell of the center on both axes.
+    const local_x = mouse_x - @as(c_int, @intCast(col)) * cell_w;
+    const local_y = mouse_y - @as(c_int, @intCast(row)) * cell_h;
+    if (@abs(local_x - @divTrunc(cell_w, 2)) > @divTrunc(cell_w, 4)) return null;
+    if (@abs(local_y - @divTrunc(cell_h, 2)) > @divTrunc(cell_h, 4)) return null;
+    return slot;
+}
+
 fn sessionRectForIndex(host: *const types.UiHost, idx: usize) ?geom.Rect {
     return switch (host.view_mode) {
         .Grid, .GridResizing => {
@@ -1655,6 +1816,30 @@ fn terminalContentRect(session_rect: geom.Rect, ui_scale: f32) ?geom.Rect {
 }
 
 const testing = std.testing;
+
+test "reorderTargetSlot fires only in a tile's center zone, only on visible slots" {
+    // 2x2 grid of 100x100 cells. Tile 1 spans x 100..200; its inner box is
+    // x 125..175, y 25..75.
+    try testing.expectEqual(@as(?usize, 1), reorderTargetSlot(150, 50, 2, 2, 100, 100, 4));
+    try testing.expectEqual(@as(?usize, 1), reorderTargetSlot(126, 30, 2, 2, 100, 100, 4));
+    // Jitter on the tile 0/1 boundary lands in neither center zone.
+    try testing.expectEqual(@as(?usize, null), reorderTargetSlot(101, 50, 2, 2, 100, 100, 4));
+    try testing.expectEqual(@as(?usize, null), reorderTargetSlot(99, 50, 2, 2, 100, 100, 4));
+    // The center of an empty slot (3 visible in a 2x2 grid) is inert; a
+    // visible slot's center works.
+    try testing.expectEqual(@as(?usize, null), reorderTargetSlot(150, 150, 2, 2, 100, 100, 3));
+    try testing.expectEqual(@as(?usize, 2), reorderTargetSlot(50, 150, 2, 2, 100, 100, 3));
+    // Off-window and beyond-grid pointers never re-slot.
+    try testing.expectEqual(@as(?usize, null), reorderTargetSlot(-5, 50, 2, 2, 100, 100, 4));
+    try testing.expectEqual(@as(?usize, null), reorderTargetSlot(500, 50, 2, 2, 100, 100, 4));
+}
+
+test "reorderPressMoved triggers strictly past the slop radius" {
+    try testing.expect(!reorderPressMoved(0, 0));
+    try testing.expect(!reorderPressMoved(reorder_drag_slop_px, 0));
+    try testing.expect(reorderPressMoved(reorder_drag_slop_px + 0.1, 0));
+    try testing.expect(reorderPressMoved(5, 5));
+}
 
 test "triggerNavWave sets nav_wave_start_time without touching attention or status" {
     var view = view_state.SessionViewState{};
