@@ -454,7 +454,7 @@ pub const SessionInteractionComponent = struct {
                     }
                 }
 
-                if (host.view_mode == .Grid and event.button.button == c.SDL_BUTTON_LEFT) {
+                if (inGridView(host.view_mode) and event.button.button == c.SDL_BUTTON_LEFT) {
                     switch (self.reorder_phase) {
                         // The drag owned this press; every re-slot was already
                         // committed live, so release just ends the gesture.
@@ -605,12 +605,15 @@ pub const SessionInteractionComponent = struct {
                 // Active: the drag owns the pointer — re-slot when the cursor
                 // enters the CENTER zone of another tile, and skip hover and
                 // selection handling entirely.
-                if (self.reorder_phase != .idle and host.view_mode != .Grid) {
+                if (self.reorder_phase != .idle and !inGridView(host.view_mode)) {
                     // View changed mid-press (zoom animation etc.) — abandon.
+                    // GridResizing still counts as grid: every committed
+                    // re-slot flips the mode there for its slide animation,
+                    // and the drag must keep running through it.
                     self.reorder_phase = .idle;
                     self.deferred_select = null;
                 }
-                if (!dragging_scrollbar and host.view_mode == .Grid and self.reorder_phase == .pending) {
+                if (!dragging_scrollbar and inGridView(host.view_mode) and self.reorder_phase == .pending) {
                     const dx = event.motion.x - self.reorder_press_x;
                     const dy = event.motion.y - self.reorder_press_y;
                     if (reorderPressMoved(dx, dy)) {
@@ -625,7 +628,7 @@ pub const SessionInteractionComponent = struct {
                         self.maybePromoteReorder(host);
                     }
                 }
-                if (!dragging_scrollbar and host.view_mode == .Grid and self.reorder_phase == .active) {
+                if (!dragging_scrollbar and inGridView(host.view_mode) and self.reorder_phase == .active) {
                     if (reorderTargetSlot(mouse_x, mouse_y, host.grid_cols, host.grid_rows, host.cell_w, host.cell_h, visibleCount(self.sessions))) |target| {
                         if (target != self.reorder_slot) {
                             actions.append(.{ .ReorderGridSessions = .{ .from = self.reorder_slot, .to = target } }) catch |err| {
@@ -812,7 +815,7 @@ pub const SessionInteractionComponent = struct {
 
         // A motionless hold gets no mouse events; the per-frame tick is what
         // promotes it to a reorder drag (wantsFrame keeps frames coming).
-        if (self.reorder_phase == .pending and host.view_mode == .Grid) {
+        if (self.reorder_phase == .pending and inGridView(host.view_mode)) {
             self.maybePromoteReorder(host);
         }
 
@@ -1734,6 +1737,13 @@ fn calculateHoveredSession(
             return null;
         },
     };
+}
+
+/// Grid for gesture purposes: .GridResizing is the grid mid-slide (reorder
+/// commits flip to it for every animated re-slot), so grid gestures must keep
+/// working through it — same equivalence calculateHoveredSession uses.
+fn inGridView(mode: app_state.ViewMode) bool {
+    return mode == .Grid or mode == .GridResizing;
 }
 
 fn visibleCount(sessions: []const *SessionState) usize {
