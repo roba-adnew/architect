@@ -3359,6 +3359,13 @@ pub fn run() !void {
                 if (move.from >= visible or move.to >= visible or move.from == move.to) continue;
                 var order_buf: [grid_layout.max_terminals]usize = undefined;
                 const order = springboardOrder(&order_buf, visible, move.from, move.to);
+                // Snapshot pre-reorder indices so the slide can animate each
+                // tile from where it was; taken before applyReorder permutes.
+                var snapshots: ?std.ArrayList(SessionIndexSnapshot) = collectSessionIndexSnapshots(sessions, allocator) catch |err| blk: {
+                    log.warn("failed to snapshot reorder positions (slide skipped): {}", .{err});
+                    break :blk null;
+                };
+                defer if (snapshots) |*snaps| snaps.deinit(allocator);
                 if (applyReorder(sessions, session_interaction_component.viewSlice(), &render_cache, &anim_state, order)) {
                     // Tiles changed cells; repaint every visible pane. PTY
                     // sizes are untouched — a pure permutation keeps the
@@ -3367,6 +3374,30 @@ pub fn run() !void {
                         if (session.isVisible()) session.markDirty();
                     }
                     persistence_dirty = true;
+                    // Slide tiles to their new cells. Unlike add/remove
+                    // reflows this also starts while a previous slide is in
+                    // flight (mode == .GridResizing): startResizeWithDuration
+                    // retargets from the drawn mid-flight rects, which is what
+                    // keeps rapid re-slots smooth instead of snapping.
+                    if (animations_enabled and (anim_state.mode == .Grid or anim_state.mode == .GridResizing)) {
+                        if (snapshots) |snaps| {
+                            var move_result: ?SessionMoves = collectSessionMovesFromSnapshots(sessions, snaps.items, allocator) catch |err| blk: {
+                                log.warn("failed to collect reorder moves (slide skipped): {}", .{err});
+                                break :blk null;
+                            };
+                            if (move_result) |*moves| {
+                                defer moves.list.deinit(allocator);
+                                if (moves.moved) {
+                                    grid.startResizeWithDuration(grid.cols, grid.rows, now, render_width, render_height, moves.list.items, GridLayout.reorder_duration_ms) catch |err| {
+                                        log.warn("failed to start reorder slide: {}", .{err});
+                                    };
+                                    if (grid.is_resizing) {
+                                        anim_state.mode = .GridResizing;
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             },
             .RevealHiddenTerminal => |idx| {

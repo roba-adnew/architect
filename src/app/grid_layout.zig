@@ -54,9 +54,15 @@ pub const GridLayout = struct {
     prev_rows: usize,
     /// Whether a grid resize animation is in progress.
     is_resizing: bool,
+    /// Duration of the in-flight animation. Reflow (add/remove) uses the
+    /// default; drag-reorder slides use the snappier reorder_duration_ms.
+    duration_ms: i64 = animation_duration_ms,
     allocator: std.mem.Allocator,
 
     pub const animation_duration_ms: i64 = 300;
+    /// Drag-reorder re-slots are one-cell hops committed live mid-drag; the
+    /// reflow duration reads as lag there, so they slide faster.
+    pub const reorder_duration_ms: i64 = 140;
 
     pub fn init(allocator: std.mem.Allocator) !GridLayout {
         return .{
@@ -116,7 +122,7 @@ pub const GridLayout = struct {
         return GridPosition.fromIndex(idx, self.cols);
     }
 
-    /// Start a grid resize animation.
+    /// Start a grid resize animation with the default reflow duration.
     pub fn startResize(
         self: *GridLayout,
         new_cols: usize,
@@ -126,7 +132,19 @@ pub const GridLayout = struct {
         render_height: c_int,
         session_moves: []const SessionMove,
     ) !void {
-        self.animations.clearRetainingCapacity();
+        return self.startResizeWithDuration(new_cols, new_rows, now, render_width, render_height, session_moves, animation_duration_ms);
+    }
+
+    pub fn startResizeWithDuration(
+        self: *GridLayout,
+        new_cols: usize,
+        new_rows: usize,
+        now: i64,
+        render_width: c_int,
+        render_height: c_int,
+        session_moves: []const SessionMove,
+        duration_ms: i64,
+    ) !void {
         log.debug("start resize {d}x{d} -> {d}x{d} moves={d}", .{
             self.cols,
             self.rows,
@@ -134,9 +152,23 @@ pub const GridLayout = struct {
             new_rows,
             session_moves.len,
         });
+
+        // Seed each move's start from its mid-flight rect when a prior
+        // resize/reorder is still animating, so rapid changes retarget from
+        // where the tile is DRAWN instead of snapping to its layout cell
+        // first. Must read before the old animation list is cleared; keyed by
+        // old_index, which is the tile's array index while that animation ran.
+        var seeded: [max_terminals]?Rect = undefined;
+        for (session_moves, 0..) |move, i| {
+            if (i >= max_terminals) break;
+            seeded[i] = if (move.old_index) |old_idx| self.getAnimatedRect(old_idx, now) else null;
+        }
+
+        self.animations.clearRetainingCapacity();
         self.prev_cols = self.cols;
         self.prev_rows = self.rows;
         self.resize_start_time = now;
+        self.duration_ms = duration_ms;
 
         // Calculate where each active session will move from/to
         const old_cell_w = @divFloor(render_width, @as(c_int, @intCast(self.cols)));
@@ -144,7 +176,7 @@ pub const GridLayout = struct {
         const new_cell_w = @divFloor(render_width, @as(c_int, @intCast(new_cols)));
         const new_cell_h = @divFloor(render_height, @as(c_int, @intCast(new_rows)));
 
-        for (session_moves) |move| {
+        for (session_moves, 0..) |move, i| {
             const new_pos = GridPosition.fromIndex(move.session_idx, new_cols);
 
             const target_rect = Rect{
@@ -154,7 +186,8 @@ pub const GridLayout = struct {
                 .h = new_cell_h,
             };
 
-            const start_rect = if (move.old_index) |old_idx| blk: {
+            const seeded_rect: ?Rect = if (i < max_terminals) seeded[i] else null;
+            const start_rect = seeded_rect orelse if (move.old_index) |old_idx| blk: {
                 const old_pos = GridPosition.fromIndex(old_idx, self.cols);
                 break :blk Rect{
                     .x = @as(c_int, @intCast(old_pos.col)) * old_cell_w,
@@ -182,7 +215,7 @@ pub const GridLayout = struct {
         if (!self.is_resizing) return true;
 
         const elapsed = now - self.resize_start_time;
-        if (elapsed >= animation_duration_ms) {
+        if (elapsed >= self.duration_ms) {
             self.is_resizing = false;
             self.animations.clearRetainingCapacity();
             return true;
@@ -208,7 +241,7 @@ pub const GridLayout = struct {
         for (self.animations.items) |anim| {
             if (anim.session_idx == session_idx) {
                 const elapsed = now - anim.start_time;
-                const progress = @min(1.0, @as(f32, @floatFromInt(elapsed)) / @as(f32, animation_duration_ms));
+                const progress = @min(1.0, @as(f32, @floatFromInt(elapsed)) / @as(f32, @floatFromInt(self.duration_ms)));
                 // Gentle sine ease: large grid reflows move hundreds of px, and
                 // cubic's 3x peak velocity made the middle frames teleport. Sine's
                 // ~1.57x peak keeps per-frame motion small enough to read as a glide.
@@ -266,6 +299,43 @@ test "calculateDimensions" {
     try std.testing.expectEqual(@as(usize, 3), GridLayout.calculateDimensions(10).rows);
     try std.testing.expectEqual(@as(usize, 4), GridLayout.calculateDimensions(12).cols);
     try std.testing.expectEqual(@as(usize, 3), GridLayout.calculateDimensions(12).rows);
+}
+
+test "startResizeWithDuration retargets from the mid-flight rect" {
+    var grid = try GridLayout.init(std.testing.allocator);
+    defer grid.deinit();
+    grid.cols = 2;
+    grid.rows = 2;
+
+    // Slide the tile from cell 0 to cell 1 (200x200 window, 100px cells).
+    const moves1 = [_]SessionMove{.{ .session_idx = 1, .old_index = 0 }};
+    try grid.startResizeWithDuration(2, 2, 0, 200, 200, &moves1, 140);
+    const mid = grid.getAnimatedRect(1, 70) orelse return error.MissingAnimation;
+    try std.testing.expect(mid.x > 0 and mid.x < 100); // strictly between cells
+
+    // Send it back while the first slide is in flight: the new animation must
+    // start from the DRAWN mid-flight rect, not snap to cell 1 first.
+    const moves2 = [_]SessionMove{.{ .session_idx = 0, .old_index = 1 }};
+    try grid.startResizeWithDuration(2, 2, 70, 200, 200, &moves2, 140);
+    try std.testing.expectEqual(mid, grid.animations.items[0].start_rect);
+    try std.testing.expectEqual(@as(c_int, 0), grid.animations.items[0].target_rect.x);
+}
+
+test "updateResize completes at the configured duration" {
+    var grid = try GridLayout.init(std.testing.allocator);
+    defer grid.deinit();
+    grid.cols = 2;
+    grid.rows = 1;
+    const moves = [_]SessionMove{.{ .session_idx = 0, .old_index = 1 }};
+
+    try grid.startResizeWithDuration(2, 1, 0, 200, 100, &moves, GridLayout.reorder_duration_ms);
+    try std.testing.expect(!grid.updateResize(GridLayout.reorder_duration_ms - 1));
+    try std.testing.expect(grid.updateResize(GridLayout.reorder_duration_ms));
+
+    // The plain startResize path keeps the default reflow duration.
+    try grid.startResize(2, 1, 0, 200, 100, &moves);
+    try std.testing.expect(!grid.updateResize(GridLayout.animation_duration_ms - 1));
+    try std.testing.expect(grid.updateResize(GridLayout.animation_duration_ms));
 }
 
 test "GridPosition" {
