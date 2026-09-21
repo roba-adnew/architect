@@ -11,28 +11,14 @@ const ExpandingOverlay = @import("expanding_overlay.zig").ExpandingOverlay;
 
 const Shortcut = struct { key: []const u8, desc: []const u8 };
 const shortcuts = [_]Shortcut{
-    .{ .key = "Click pane", .desc = "Move focus (grid view)" },
-    .{ .key = "Double-click pane", .desc = "Expand to full screen" },
-    .{ .key = "⌘ESC", .desc = "Collapse to grid view" },
-    .{ .key = "⇧↑/↓/←/→", .desc = "Navigate grid" },
     .{ .key = "⌘1–⌘9/⌘0", .desc = "Jump to a grid slot" },
     .{ .key = "⌘↵", .desc = "Focus selected pane" },
     .{ .key = "⌘T", .desc = "Open worktree picker" },
     .{ .key = "⌘O", .desc = "Open recent folders" },
     .{ .key = "⌘?", .desc = "Open help" },
-    .{ .key = "⌘N", .desc = "Spawn new terminal" },
-    .{ .key = "⌘J", .desc = "Hide terminal from grid" },
-    .{ .key = "⌘⇧J", .desc = "Hidden-terminals picker" },
-    .{ .key = "⌘+ / ⌘-", .desc = "Zoom (grid or focus view)" },
     .{ .key = "⌘D", .desc = "Show git diff" },
     .{ .key = "⌘R", .desc = "Open reader mode" },
-    .{ .key = "⌘K", .desc = "Clear terminal" },
-    .{ .key = "⌘W", .desc = "Delete terminal" },
     .{ .key = "⌘,", .desc = "Open config file" },
-    .{ .key = "Drag", .desc = "Select text (grid or full view)" },
-    .{ .key = "⌘C", .desc = "Copy selection to clipboard" },
-    .{ .key = "⌘V", .desc = "Paste clipboard into terminal" },
-    .{ .key = "Mouse wheel", .desc = "Scroll history" },
 };
 
 const TextTex = struct {
