@@ -846,7 +846,8 @@ pub const SessionInteractionComponent = struct {
         if (self.reorder_phase != .active or !inGridView(host.view_mode)) return;
         const rect = sessionRectForIndex(host, self.reorder_slot) orelse return;
         const thickness = dpi.scale(renderer_mod.grid_border_thickness + 2, host.ui_scale);
-        primitives.drawThickBorder(renderer, rect, thickness, dpi.scale(6, host.ui_scale), host.theme.accent);
+        const lift_gray = c.SDL_Color{ .r = 190, .g = 190, .b = 190, .a = 220 };
+        primitives.drawThickBorder(renderer, rect, thickness, dpi.scale(6, host.ui_scale), lift_gray);
     }
 
     fn update(self_ptr: *anyopaque, host: *const types.UiHost, _: *types.UiActionQueue) void {
