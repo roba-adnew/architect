@@ -102,6 +102,9 @@ pub const SDL_BUTTON_RMASK: c_import.SDL_MouseButtonFlags = c_import.SDL_BUTTON_
 pub const SDL_SYSTEM_CURSOR_DEFAULT = c_import.SDL_SYSTEM_CURSOR_DEFAULT;
 pub const SDL_SYSTEM_CURSOR_TEXT = c_import.SDL_SYSTEM_CURSOR_TEXT;
 pub const SDL_SYSTEM_CURSOR_POINTER = c_import.SDL_SYSTEM_CURSOR_POINTER;
+/// On macOS SDL maps this to NSCursor.closedHandCursor (no native four-arrow
+/// move cursor exists there) — used as the drag-reorder "fist".
+pub const SDL_SYSTEM_CURSOR_MOVE = c_import.SDL_SYSTEM_CURSOR_MOVE;
 pub const SDL_GetModState = c_import.SDL_GetModState;
 pub const SDL_Scancode = c_import.SDL_Scancode;
 pub const SDL_SCANCODE_HOME = c_import.SDL_SCANCODE_HOME;

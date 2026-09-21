@@ -34,7 +34,7 @@ pub const wave_amplitude: f32 = 0.08;
 pub const nav_wave_amplitude: f32 = 0.02;
 pub const wave_strip_height: i64 = 8;
 
-const CursorKind = enum { arrow, ibeam, pointer };
+const CursorKind = enum { arrow, ibeam, pointer, grab };
 
 /// Click-hold-drag tile reorder (grid view): a plain press becomes a drag
 /// after `reorder_hold_ms` without traveling more than `reorder_drag_slop_px`;
@@ -51,6 +51,7 @@ pub const SessionInteractionComponent = struct {
     arrow_cursor: ?*c.SDL_Cursor = null,
     ibeam_cursor: ?*c.SDL_Cursor = null,
     pointer_cursor: ?*c.SDL_Cursor = null,
+    grab_cursor: ?*c.SDL_Cursor = null,
     current_cursor: CursorKind = .arrow,
     last_update_ms: i64 = 0,
     /// Grid-view text selection: the pane index a drag-select started in, so motion
@@ -96,6 +97,7 @@ pub const SessionInteractionComponent = struct {
         self.arrow_cursor = c.SDL_CreateSystemCursor(c.SDL_SYSTEM_CURSOR_DEFAULT);
         self.ibeam_cursor = c.SDL_CreateSystemCursor(c.SDL_SYSTEM_CURSOR_TEXT);
         self.pointer_cursor = c.SDL_CreateSystemCursor(c.SDL_SYSTEM_CURSOR_POINTER);
+        self.grab_cursor = c.SDL_CreateSystemCursor(c.SDL_SYSTEM_CURSOR_MOVE);
         if (self.arrow_cursor) |cursor| {
             _ = c.SDL_SetCursor(cursor);
             self.current_cursor = .arrow;
@@ -124,6 +126,9 @@ pub const SessionInteractionComponent = struct {
             c.SDL_DestroyCursor(cursor);
         }
         if (self.pointer_cursor) |cursor| {
+            c.SDL_DestroyCursor(cursor);
+        }
+        if (self.grab_cursor) |cursor| {
             c.SDL_DestroyCursor(cursor);
         }
         self.allocator.free(self.views);
@@ -219,6 +224,9 @@ pub const SessionInteractionComponent = struct {
             if (idx < self.views.len) endSelection(&self.views[idx]);
             self.grid_selection_idx = null;
         }
+        // Closed fist (macOS closed-hand) from the moment the hold arms, even
+        // before any motion event arrives.
+        self.updateCursor(.grab);
         self.reorder_first_frame.markTransition();
     }
 
@@ -228,6 +236,7 @@ pub const SessionInteractionComponent = struct {
     fn endReorder(self: *SessionInteractionComponent) void {
         self.reorder_phase = .idle;
         self.deferred_select = null;
+        self.updateCursor(.arrow);
         self.reorder_first_frame.markTransition();
     }
 
@@ -671,7 +680,7 @@ pub const SessionInteractionComponent = struct {
                             self.reorder_slot = target;
                         }
                     }
-                    self.updateCursor(.arrow);
+                    self.updateCursor(.grab);
                     return true;
                 }
 
@@ -1037,6 +1046,7 @@ pub const SessionInteractionComponent = struct {
             .arrow => self.arrow_cursor,
             .ibeam => self.ibeam_cursor,
             .pointer => self.pointer_cursor,
+            .grab => self.grab_cursor,
         };
         if (target_cursor) |cursor| {
             _ = c.SDL_SetCursor(cursor);
