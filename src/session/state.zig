@@ -73,10 +73,21 @@ extern "c" fn proc_pidpath(pid: c_int, buffer: [*]u8, buffersize: u32) c_int;
 const pending_write_shrink_threshold: usize = 64 * 1024;
 const session_id_buf_len: usize = 32;
 
-/// Monotonic spawn counter backing SessionState.spawn_seq. Never recycled —
-/// unlike persist_index/id, which reuse a closed terminal's struct index and
-/// therefore cannot order terminals by creation time.
-var next_spawn_seq: u64 = 1;
+/// Monotonic counter backing SessionState.order_seq. Never recycled — unlike
+/// persist_index/id, which reuse a closed terminal's struct index and
+/// therefore cannot order terminals. Advanced on first spawn and by
+/// mintOrderSeqBlock when a drag-reorder renumbers the visible block.
+var next_order_seq: u64 = 1;
+
+/// Reserve `n` consecutive order_seq values above everything handed out so
+/// far, returning the first. A reorder renumbers the whole visible block from
+/// a fresh range so it can't collide with hidden sessions or a mid-spawn
+/// terminal, and the next spawn still sorts last.
+pub fn mintOrderSeqBlock(n: usize) u64 {
+    const base = next_order_seq;
+    next_order_seq += @intCast(n);
+    return base;
+}
 const synchronized_output_timeout_ms: i64 = 1000;
 const synchronized_output_quiet_ms: i64 = 100;
 const synchronized_output_max_timeout_ms: i64 = 5000;
@@ -102,13 +113,15 @@ pub const SessionState = struct {
     /// cancels copy-mode so the cursor returns to the live prompt. See sendInput.
     scrolled_in_copy_mode: bool = false,
     id: usize,
-    /// Creation-order key for grid ordering (compactSessions sorts visible
-    /// sessions by this). Assigned from a monotonic counter on first spawn,
-    /// kept across in-place restarts (so a restarted terminal holds its grid
-    /// position), and cleared on close so a reused struct gets a fresh seq.
-    /// id/persist_index can't serve this role: they recycle a closed
-    /// terminal's index, so sorting by them scrambled the visible order.
-    spawn_seq: u64 = 0,
+    /// Display-order key for the grid (compactSessions sorts visible sessions
+    /// by this). Initialized from a monotonic counter on first spawn (so the
+    /// default order is creation order), renumbered via mintOrderSeqBlock when
+    /// the user drag-reorders tiles, kept across in-place restarts (so a
+    /// restarted terminal holds its grid position), and cleared on close so a
+    /// reused struct gets a fresh seq. id/persist_index can't serve this role:
+    /// they recycle a closed terminal's index, so sorting by them scrambled
+    /// the visible order.
+    order_seq: u64 = 0,
     shell: ?shell_mod.Shell,
     terminal: ?ghostty_vt.Terminal,
     stream: ?vt_stream.StreamType,
@@ -251,9 +264,9 @@ pub const SessionState = struct {
         // Bump generation to invalidate any stale callbacks from a previous shell; wrapping is intentional.
         self.process_generation +%= 1;
         self.assignSessionId();
-        if (self.spawn_seq == 0) {
-            self.spawn_seq = next_spawn_seq;
-            next_spawn_seq += 1;
+        if (self.order_seq == 0) {
+            self.order_seq = next_order_seq;
+            next_order_seq += 1;
         }
 
         // tmux-backed persistence (on by default): when tmux is available the
@@ -447,7 +460,7 @@ pub const SessionState = struct {
         self.cwd_settled = false;
         // Closed for good (restart uses resetForRespawn, not teardown): a later
         // spawn reusing this struct is a NEW terminal and must sort at the end.
-        self.spawn_seq = 0;
+        self.order_seq = 0;
     }
 
     pub const ProcessOutputError = posix.ReadError || posix.WriteError || error{
