@@ -3286,6 +3286,12 @@ pub fn run() !void {
                 // events could build the selection, so a drag-select on a
                 // non-focused grid pane produced nothing to copy.
                 session_interaction_component.clearSelection(anim_state.focused_session);
+                // Selecting is a focus: acknowledge a sticky "done"/"needs you"
+                // back to idle AND drop the attention border, same as every
+                // keyboard/zoom focus path (status alone leaves an orange
+                // fallback border while `attention` is still set).
+                session_interaction_component.acknowledgeAttention(idx);
+                session_interaction_component.setAttention(idx, false, now);
                 anim_state.focused_session = idx;
             },
             .RevealHiddenTerminal => |idx| {
