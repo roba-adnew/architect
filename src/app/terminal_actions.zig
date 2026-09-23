@@ -119,7 +119,14 @@ pub fn copySelectionToClipboard(
     };
     const screen = terminal.screens.active;
     const sel = screen.selection orelse {
-        ui.showToast("No selection", now);
+        // Programs with mouse tracking (e.g. Claude Code) receive the drag,
+        // make their own selection, and copy it themselves — so "No selection"
+        // would be a false alarm here.
+        const program_owns_mouse = terminal.modes.get(.mouse_event_normal) or
+            terminal.modes.get(.mouse_event_button) or
+            terminal.modes.get(.mouse_event_any) or
+            terminal.modes.get(.mouse_event_x10);
+        if (!program_owns_mouse) ui.showToast("No selection", now);
         return;
     };
 
