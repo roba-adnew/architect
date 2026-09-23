@@ -41,6 +41,7 @@ const architect_term = "xterm-ghostty";
 const default_colorterm = "truecolor";
 const default_lang = "en_US.UTF-8";
 const default_term_program = "Architect";
+const default_force_hyperlink = "1";
 
 // Architect terminfo: xterm-256color base + 24-bit truecolor + kitty keyboard protocol
 const architect_terminfo_src = assets.xterm_ghostty;
@@ -1233,6 +1234,13 @@ pub const Shell = struct {
             setDefaultEnv("COLORTERM", default_colorterm);
             setDefaultEnv("LANG", default_lang);
             setDefaultEnv("TERM_PROGRAM", default_term_program);
+            // CLIs that feature-detect OSC 8 hyperlink support (Claude Code,
+            // anything using the supports-hyperlinks library) don't recognize
+            // TERM_PROGRAM=Architect and fall back to plain colored text, so
+            // Cmd+Click has no URL to open. Architect + ghostty-vt fully
+            // support OSC 8, so force emission on. Default-only: a user
+            // exporting FORCE_HYPERLINK=0 wins.
+            setDefaultEnv("FORCE_HYPERLINK", default_force_hyperlink);
             configureZshPathInjection(shell_path);
             ensureArchitectCommandPath();
 
@@ -1274,7 +1282,7 @@ pub const Shell = struct {
                 const sess_z = std.fmt.bufPrintZ(&sess_buf, "ARCHITECT_SESSION_ID={s}", .{session_id}) catch std.c._exit(1);
                 const sock_z = std.fmt.bufPrintZ(&sock_buf, "ARCHITECT_NOTIFY_SOCK={s}", .{notify_sock}) catch std.c._exit(1);
 
-                var argv: [24]?[*:0]const u8 = undefined;
+                var argv: [26]?[*:0]const u8 = undefined;
                 var n: usize = 0;
                 argv[n] = p.tmux_path.ptr;
                 n += 1;
@@ -1309,6 +1317,14 @@ pub const Shell = struct {
                 argv[n] = "-e";
                 n += 1;
                 argv[n] = sock_z.ptr;
+                n += 1;
+                // Servers started before FORCE_HYPERLINK existed lack it in
+                // their global env; the per-session override covers new
+                // sessions on those servers (fresh servers also inherit it
+                // from the client env via setDefaultEnv above).
+                argv[n] = "-e";
+                n += 1;
+                argv[n] = "FORCE_HYPERLINK=1";
                 n += 1;
                 // ALWAYS override ARCHITECT_RESUME_CMD per session — empty when
                 // no resume is intended. The tmux SERVER captures the env of
