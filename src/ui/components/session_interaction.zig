@@ -1484,7 +1484,7 @@ fn getLinkMatchAtPin(allocator: std.mem.Allocator, terminal: *ghostty_vt.Termina
 
     if (page.lookupHyperlink(cell)) |hyperlink_id| {
         const entry = page.hyperlink_set.get(page.memory, hyperlink_id);
-        const url = allocator.dupe(u8, entry.uri.slice(page.memory)) catch return null;
+        const url = resolveHyperlinkTarget(allocator, cwd, entry.uri.slice(page.memory)) orelse return null;
         return LinkMatch{
             .url = url,
             .start_pin = pin,
@@ -1663,6 +1663,23 @@ fn getLinkMatchAtPin(allocator: std.mem.Allocator, terminal: *ghostty_vt.Termina
     };
 }
 
+/// Turn an OSC 8 URI into an openable target. Claude Code (and other CLIs)
+/// emit cwd-relative targets like `docs/FOO.md` for local files; opened
+/// verbatim, the opener resolves them against Architect's own cwd and silently
+/// fails. Scheme-less relative targets are resolved against the pane's cwd
+/// (existing files only); everything else — scheme URLs, absolute paths, or a
+/// relative path that doesn't resolve — passes through verbatim. Caller owns
+/// the result.
+fn resolveHyperlinkTarget(allocator: std.mem.Allocator, cwd: ?[]const u8, uri: []const u8) ?[]u8 {
+    if (uri.len > 0 and uri[0] != '/' and std.mem.indexOf(u8, uri, "://") == null) {
+        if (resolveExistingPath(allocator, cwd, uri)) |abs| return abs;
+    }
+    return allocator.dupe(u8, uri) catch |err| {
+        log.warn("failed to dupe hyperlink target: {}", .{err});
+        return null;
+    };
+}
+
 /// Resolve a path token against the pane's working directory and return an
 /// owned absolute path IFF it exists on disk. The existence check is what keeps
 /// arbitrary path-ish text from being treated as an openable link. Relative
@@ -1689,6 +1706,37 @@ fn resolveExistingPath(allocator: std.mem.Allocator, cwd: ?[]const u8, token: []
         return null;
     };
     return candidate;
+}
+
+test "resolveHyperlinkTarget - relative resolves against cwd, others pass verbatim" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.makeDir("docs");
+    try tmp.dir.writeFile(.{ .sub_path = "docs/guide.md", .data = "hi" });
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(dir_path);
+
+    // Relative target that exists -> absolute path under cwd.
+    const rel = resolveHyperlinkTarget(allocator, dir_path, "docs/guide.md") orelse return error.TestExpectedMatch;
+    defer allocator.free(rel);
+    try std.testing.expect(rel[0] == '/');
+    try std.testing.expect(std.mem.endsWith(u8, rel, "docs/guide.md"));
+
+    // Scheme URL -> verbatim, never resolved as a path.
+    const url = resolveHyperlinkTarget(allocator, dir_path, "https://example.com/docs") orelse return error.TestExpectedMatch;
+    defer allocator.free(url);
+    try std.testing.expectEqualStrings("https://example.com/docs", url);
+
+    // Absolute path -> verbatim.
+    const abs = resolveHyperlinkTarget(allocator, dir_path, "/etc/hosts") orelse return error.TestExpectedMatch;
+    defer allocator.free(abs);
+    try std.testing.expectEqualStrings("/etc/hosts", abs);
+
+    // Relative target that doesn't exist -> verbatim fallback.
+    const miss = resolveHyperlinkTarget(allocator, dir_path, "docs/nope.md") orelse return error.TestExpectedMatch;
+    defer allocator.free(miss);
+    try std.testing.expectEqualStrings("docs/nope.md", miss);
 }
 
 test "resolveExistingPath - relative resolves against cwd; missing returns null" {
